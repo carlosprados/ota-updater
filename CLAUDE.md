@@ -101,7 +101,7 @@ task clean              # rm bin/ y store/deltas/
 - [x] Paso 9 — `internal/server/config.go` + `cmd/update-server/main.go` (reinicio no permitido; `Store.Reload` con `RWMutex`, watcher fsnotify con debounce, `POST /admin/reload` con bearer estático, `LevelVar` + `POST /admin/loglevel`, graceful shutdown SIGINT/SIGTERM, timeouts estrictos, `configs/server.yaml` de ejemplo)
 - [x] Paso 10 — `internal/agent/config.go` + `configs/agent.yaml` (tipos exportados para uso librería; `Transport` type-safe; `ApplyDefaults`/`Validate` públicos; tests incluyen flujo library-no-YAML)
 - [x] Paso 11 — `internal/agent/slots.go` (SlotManager A/B con Active/Inactive/WriteToInactive/Swap/Rollback; symlink swap atómico via tmp+rename; tests cubren active/inactive, atomicity, swap/rollback, inactive intact, validaciones)
-- [ ] Paso 12 — `internal/agent/downloader.go`
+- [x] Paso 12 — `internal/agent/downloader.go` (`DeltaTransport` interface + `HTTPTransport` con Range + `CoAPTransport` sin resume; Downloader con state JSON, exp backoff+jitter, verify SHA-256 final, fallback a offset=0 cuando transport rechaza resume)
 - [ ] Paso 13 — `internal/agent/watchdog.go`
 - [ ] Paso 14 — `internal/agent/updater.go`
 - [ ] Paso 15 — `cmd/edge-agent/main.go`
