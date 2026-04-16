@@ -80,7 +80,7 @@ go build ./... && go vet ./...   # verificación rápida
 - [x] Paso 6 — `internal/server/manifest.go` (con tests: target current, unknown source, delta cached con firma verificada, delta async)
 - [x] Paso 7 — `internal/server/http_handler.go` (con tests: heartbeat 3 caminos, delta full/Range/404+async/traversal, report, health) + `docs/signing.md`
 - [ ] Paso 8 — `internal/server/coap_handler.go`
-- [ ] Paso 9 — `internal/server/config.go` + `cmd/update-server/main.go` (**incluir `Store.Reload()` con RWMutex + handler `SIGHUP` para recargar target sin reiniciar** — decidido 2026-04-16)
+- [ ] Paso 9 — `internal/server/config.go` + `cmd/update-server/main.go` (**reinicio no permitido**; (a) `Store.Reload()` con `RWMutex`, (b) watcher fsnotify con debounce sobre el target binary, (c) endpoint `POST /admin/reload` con **bearer token estático** (`Authorization: Bearer <token>`, `admin.token` en `server.yaml`, comparación en tiempo constante). Decidido 2026-04-16.)
 - [ ] Paso 10 — `internal/agent/config.go`
 - [ ] Paso 11 — `internal/agent/slots.go`
 - [ ] Paso 12 — `internal/agent/downloader.go`
