@@ -72,7 +72,7 @@ go build ./... && go vet ./...   # verificación rápida
 - [x] Paso 2 — `internal/crypto/` + `tools/keygen/`
 - [x] Paso 3 — `internal/compression/`
 - [x] Paso 4 — `internal/delta/` (round-trip test ya incluido)
-- [ ] Paso 5 — `internal/server/store.go`
+- [x] Paso 5 — `internal/server/store.go` (con tests: round-trip, cache hit, concurrent dedup)
 - [ ] Paso 6 — `internal/server/manifest.go`
 - [ ] Paso 7 — `internal/server/http_handler.go`
 - [ ] Paso 8 — `internal/server/coap_handler.go`
