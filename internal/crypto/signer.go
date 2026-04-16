@@ -1,7 +1,11 @@
 // Package crypto provides Ed25519 signing (server-side) and verification
-// (agent-side) for OTA update manifests. The server signs the SHA-256 hash of
-// the target binary; the agent verifies that signature against the same hash
-// after reconstruction from the delta.
+// (agent-side) for OTA update manifests.
+//
+// The signed payload is not a raw hash but a canonical composite built by
+// protocol.ManifestSigningPayload: targetHashRaw || deltaHashRaw (64 bytes).
+// This package intentionally stays format-agnostic; callers build the payload
+// via the protocol package and hand it to Sign/Verify. See docs/signing.md
+// for the full scheme.
 package crypto
 
 import (
@@ -40,9 +44,12 @@ func LoadPrivateKey(path string) (ed25519.PrivateKey, error) {
 }
 
 // Sign signs the given message bytes with the provided Ed25519 private key.
-// Ed25519 hashes the message internally with SHA-512; callers pass the raw
-// payload (e.g. protocol.ManifestSigningPayload output), not a pre-hashed
-// digest.
+//
+// Pass the raw message (e.g. the 64-byte payload returned by
+// protocol.ManifestSigningPayload), not a pre-hashed digest: Ed25519 hashes
+// the input internally with SHA-512. Returns a 64-byte signature.
+//
+// See docs/signing.md §4 for the server-side flow that uses this function.
 func Sign(priv ed25519.PrivateKey, msg []byte) ([]byte, error) {
 	if len(priv) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("invalid private key size %d", len(priv))
