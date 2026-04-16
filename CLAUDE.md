@@ -64,12 +64,19 @@ Pendientes de confirmación o decisión de diseño antes de llegar al paso corre
 
 ## Comandos habituales
 
+Build tool: **Taskfile** (`Taskfile.yml`), no Makefile. Instalar `task` (taskfile.dev) una vez.
+
 ```bash
-make build-agent        # bin/edge-agent (static)
-make build-server       # bin/update-server (static)
-make keygen             # genera ./keys/{server.key,agent.pub}
-make test               # go test ./... -v -race
-go build ./... && go vet ./...   # verificación rápida
+task                    # listar tareas
+task build              # ambos binarios (static, CGO_ENABLED=0)
+task build-agent        # bin/edge-agent
+task build-server       # bin/update-server
+task keygen             # ./keys/{server.key,agent.pub}
+task test               # go test ./... -race -count=1
+task vet                # go vet ./...
+task check              # vet + build (rápido, sin tests)
+task ci                 # vet + test + build
+task clean              # rm bin/ y store/deltas/
 ```
 
 ## Convenciones locales
@@ -98,4 +105,4 @@ go build ./... && go vet ./...   # verificación rápida
 - [ ] Paso 15 — `cmd/edge-agent/main.go`
 - [ ] Paso 16 — tests unitarios
 - [ ] Paso 17 — test de integración (`integration_test.go`, tag `integration`)
-- [ ] Paso 18 — Makefile, README, configs de ejemplo
+- [ ] Paso 18 — **Taskfile.yml** (no Makefile, decidido 2026-04-16), README, configs de ejemplo
