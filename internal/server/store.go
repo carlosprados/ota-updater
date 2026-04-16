@@ -108,48 +108,86 @@ func (s *Store) HasDelta(fromHash string) bool {
 	return err == nil
 }
 
+// HasBinary reports whether a source binary with the given hash is registered
+// in the store (checked on disk, not cache).
+func (s *Store) HasBinary(hash string) bool {
+	_, err := os.Stat(s.binaryPath(hash))
+	return err == nil
+}
+
 // EnsureDelta returns the on-disk path of the delta from fromHash to the
 // current target, generating and caching it if necessary. Concurrent requests
 // for the same source hash are deduplicated via singleflight — only one
 // bsdiff generation runs at a time per (from, target) pair.
 func (s *Store) EnsureDelta(ctx context.Context, fromHash string) (string, error) {
-	out := s.DeltaPath(fromHash, s.targetHash)
-	if _, err := os.Stat(out); err == nil {
-		return out, nil
+	if p := s.DeltaPath(fromHash, s.targetHash); fileExists(p) {
+		return p, nil
 	}
-
 	key := fromHash + "_" + s.targetHash
 	v, err, _ := s.group.Do(key, func() (any, error) {
-		// recheck: another caller may have just finished while we queued
-		if _, err := os.Stat(out); err == nil {
-			return out, nil
-		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		oldBin, err := s.loadBinary(fromHash)
-		if err != nil {
-			return nil, err
-		}
-		s.logger.Info("generating delta", "from", fromHash, "to", s.targetHash)
-		patch, err := delta.Generate(oldBin, s.targetBin)
-		if err != nil {
-			return nil, fmt.Errorf("generate delta: %w", err)
-		}
-		if err := writeAtomic(out, patch, 0o644); err != nil {
-			return nil, fmt.Errorf("write delta: %w", err)
-		}
-		s.logger.Info("delta cached",
-			"from", fromHash,
-			"to", s.targetHash,
-			"size", len(patch),
-		)
-		return out, nil
+		return s.generateAndCache(fromHash)
 	})
 	if err != nil {
 		return "", err
 	}
 	return v.(string), nil
+}
+
+// StartDeltaGeneration dispatches an asynchronous delta generation for
+// fromHash → current target, returning immediately. Returns true if a task
+// was dispatched, false if the delta is already cached or the source binary
+// is unknown. Uses the same singleflight group as EnsureDelta, so concurrent
+// sync/async requests for the same pair coalesce into a single bsdiff run.
+func (s *Store) StartDeltaGeneration(fromHash string) bool {
+	if s.HasDelta(fromHash) || !s.HasBinary(fromHash) {
+		return false
+	}
+	key := fromHash + "_" + s.targetHash
+	go func() {
+		_, err, _ := s.group.Do(key, func() (any, error) {
+			return s.generateAndCache(fromHash)
+		})
+		if err != nil {
+			s.logger.Error("async delta generation failed",
+				"from", fromHash, "to", s.targetHash, "err", err,
+			)
+		}
+	}()
+	return true
+}
+
+// generateAndCache is the shared work unit behind EnsureDelta and
+// StartDeltaGeneration. It re-checks the cache after acquiring the
+// singleflight slot so a recently-finished peer wins the race cleanly.
+func (s *Store) generateAndCache(fromHash string) (string, error) {
+	out := s.DeltaPath(fromHash, s.targetHash)
+	if fileExists(out) {
+		return out, nil
+	}
+	oldBin, err := s.loadBinary(fromHash)
+	if err != nil {
+		return "", err
+	}
+	s.logger.Info("generating delta", "from", fromHash, "to", s.targetHash)
+	patch, err := delta.Generate(oldBin, s.targetBin)
+	if err != nil {
+		return "", fmt.Errorf("generate delta: %w", err)
+	}
+	if err := writeAtomic(out, patch, 0o644); err != nil {
+		return "", fmt.Errorf("write delta: %w", err)
+	}
+	s.logger.Info("delta cached",
+		"from", fromHash, "to", s.targetHash, "size", len(patch),
+	)
+	return out, nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // RegisterBinary stores a source binary in binariesDir keyed by its SHA-256
