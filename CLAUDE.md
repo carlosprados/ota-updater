@@ -70,8 +70,8 @@ go build ./... && go vet ./...   # verificación rápida
 
 - [x] Paso 1 — `internal/protocol/` (messages + constants)
 - [x] Paso 2 — `internal/crypto/` + `tools/keygen/`
-- [ ] Paso 3 — `internal/compression/`
-- [ ] Paso 4 — `internal/delta/`
+- [x] Paso 3 — `internal/compression/`
+- [x] Paso 4 — `internal/delta/` (round-trip test ya incluido)
 - [ ] Paso 5 — `internal/server/store.go`
 - [ ] Paso 6 — `internal/server/manifest.go`
 - [ ] Paso 7 — `internal/server/http_handler.go`
