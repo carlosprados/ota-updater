@@ -7,4 +7,7 @@ require (
 	github.com/klauspost/compress v1.18.5
 )
 
-require github.com/dsnet/compress v0.0.0-20171208185109-cc9eb1d7ad76 // indirect
+require (
+	github.com/dsnet/compress v0.0.0-20171208185109-cc9eb1d7ad76 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+)
