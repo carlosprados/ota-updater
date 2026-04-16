@@ -2,6 +2,16 @@
 
 Complementa a `~/.claude/CLAUDE.md` (no duplica git/idioma/estilo). Aplica a este proyecto.
 
+## Estado al cierre de sesión (2026-04-16)
+
+- Rama activa: `ota/bootstrap-protocol-crypto`. Working tree limpio en el último commit.
+- Último commit: `9bcd798 feat(agent): step 12 -- downloader with HTTP Range resume and CoAP fallback`.
+- **Pasos 1–12 completados.** Pasos **13–18 pendientes** (watchdog → updater → cmd/edge-agent → tests → integration → pkg-move+README).
+- Antes del paso 13 hay **dos decisiones abiertas** que necesitan respuesta de Charlie:
+  1. Watchdog: número de reintentos N de heartbeat dentro de la ventana antes de considerar fallo (recomendación: 3).
+  2. Paso 14: estrategia de self-restart tras swap (recomendación: `syscall.Exec` por defecto con interfaz `RestartStrategy` pluggable).
+- Para reanudar: `task ci` debe estar verde; leer memoria `project_resumption_2026-04-17.md` (índice resumen, decisiones y políticas críticas).
+
 ## Qué es
 
 Sistema OTA en Go para dispositivos NB-IoT. Dos binarios:
