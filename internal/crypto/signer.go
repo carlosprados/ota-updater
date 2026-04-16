@@ -39,14 +39,15 @@ func LoadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	return priv, nil
 }
 
-// SignHash signs the given raw hash bytes with the provided Ed25519 private key.
-// The caller is responsible for computing the hash (typically SHA-256 of the
-// target binary).
-func SignHash(priv ed25519.PrivateKey, hash []byte) ([]byte, error) {
+// Sign signs the given message bytes with the provided Ed25519 private key.
+// Ed25519 hashes the message internally with SHA-512; callers pass the raw
+// payload (e.g. protocol.ManifestSigningPayload output), not a pre-hashed
+// digest.
+func Sign(priv ed25519.PrivateKey, msg []byte) ([]byte, error) {
 	if len(priv) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("invalid private key size %d", len(priv))
 	}
-	return ed25519.Sign(priv, hash), nil
+	return ed25519.Sign(priv, msg), nil
 }
 
 // EncodePrivateKeyPEM returns the PKCS#8-PEM encoding of the given Ed25519

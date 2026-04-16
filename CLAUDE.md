@@ -32,7 +32,7 @@ Sigue los 18 pasos del `prompt-ota-updater.md §Implementation Order`. Cada paso
 
 ## Decisiones de proyecto
 
-- **Firma Ed25519 del hash del binario target** (no del delta). Permite cambiar de ruta de delta sin re-firmar. Ver `internal/crypto/`.
+- **Firma Ed25519 sobre `targetHash || deltaHash`** (opción B, decidida 2026-04-16). El payload canónico lo construye `protocol.ManifestSigningPayload`. Permite al agente abortar una descarga corrupta antes de parchear (ahorra downlink NB-IoT), sin renunciar a la autenticidad del binario activado. Coste: firma por-par `(from,to)`, marginal con Ed25519.
 - **Claves**: PKCS#8 PEM para privada (`server.key`, 0600), PKIX PEM para pública (`agent.pub`, 0644). Generadas con `go run ./tools/keygen -out <dir>`.
 - **`keygen` se niega a sobrescribir** ficheros existentes (O_EXCL). Destruir claves es manual y explícito.
 - **Tags duales JSON + CBOR** en `internal/protocol/messages.go` con claves CBOR enteras (compactas). Un único tipo por mensaje para HTTP y CoAP.
@@ -45,7 +45,7 @@ Pendientes de confirmación o decisión de diseño antes de llegar al paso corre
 1. **RAM de `bsdiff` en server** — cachear agresivo, considerar precómputo en arranque.
 2. **Self-restart del agente tras swap** — `syscall.Exec` puro vs. dependencia de systemd. Decidir antes del paso 14 (`updater.go`).
 3. **Watchdog**: criterio "alcanza server" es frágil en NB-IoT. Exigir N reintentos durante la ventana, no fallo instantáneo. Decidir antes del paso 13.
-4. **Protección de delta corrupto**: considerar incluir `DeltaHash` en el payload firmado del manifest para abortar antes de gastar ancho de banda parcheando. Decidir antes del paso 6 (`manifest.go`).
+4. ~~**Protección de delta corrupto**~~ — resuelto 2026-04-16: opción B implementada (firma sobre `targetHash || deltaHash`). Ver `internal/protocol/signing.go`.
 5. **Clock skew** en `Timestamp` de heartbeat/report: definir política de validación server-side.
 6. **go-bsdiff**: poco activo. Validar temprano con binarios reales; considerar alternativa `icedream/go-bsdiff`.
 

@@ -30,7 +30,7 @@ type ManifestResponse struct {
 	DeltaHash       string `json:"delta_hash,omitempty"       cbor:"5,keyasint,omitempty"` // SHA-256 hex of compressed delta
 	ChunkSize       int    `json:"chunk_size,omitempty"       cbor:"6,keyasint,omitempty"`
 	TotalChunks     int    `json:"total_chunks,omitempty"     cbor:"7,keyasint,omitempty"`
-	Signature       string `json:"signature,omitempty"        cbor:"8,keyasint,omitempty"` // Ed25519 sig (hex) of TargetHash raw bytes
+	Signature       string `json:"signature,omitempty"        cbor:"8,keyasint,omitempty"` // Ed25519 hex sig over ManifestSigningPayload(TargetHash, DeltaHash)
 	DeltaEndpoint   string `json:"delta_endpoint,omitempty"   cbor:"9,keyasint,omitempty"` // transport-relative path
 	RetryAfter      int    `json:"retry_after,omitempty"      cbor:"10,keyasint,omitempty"` // seconds; >0 means delta not ready yet
 }
