@@ -42,6 +42,7 @@ func NewCoAPRouter(cfg CoAPConfig) (*mux.Router, error) {
 		c.logger = slog.Default()
 	}
 	r := mux.NewRouter()
+	r.Use(recoverCoAP(c.logger))
 	if err := r.Handle(protocol.PathHeartbeat, mux.HandlerFunc(c.heartbeat)); err != nil {
 		return nil, fmt.Errorf("register heartbeat: %w", err)
 	}
@@ -78,7 +79,9 @@ func (c *coapHandler) heartbeat(w mux.ResponseWriter, r *mux.Message) {
 	}
 	resp, err := c.manifester.Build(r.Context(), &hb)
 	if err != nil {
-		c.logger.Error("manifest build", "device_id", hb.DeviceID, "err", err)
+		c.logger.Error("manifest build",
+			"op", "heartbeat", "transport", "coap", "device_id", hb.DeviceID, "err", err,
+		)
 		c.respond(w, codes.InternalServerError, message.TextPlain, nil)
 		return
 	}
@@ -87,6 +90,14 @@ func (c *coapHandler) heartbeat(w mux.ResponseWriter, r *mux.Message) {
 		c.respond(w, codes.InternalServerError, message.TextPlain, nil)
 		return
 	}
+	c.logger.Info("heartbeat served",
+		"op", "heartbeat", "transport", "coap",
+		"device_id", hb.DeviceID,
+		"from", hb.VersionHash,
+		"to", c.store.TargetHash(),
+		"update_available", resp.UpdateAvailable,
+		"retry_after", resp.RetryAfter,
+	)
 	c.respond(w, codes.Content, message.AppCBOR, bytes.NewReader(buf))
 }
 
@@ -134,16 +145,29 @@ func (c *coapHandler) delta(w mux.ResponseWriter, r *mux.Message) {
 	path := c.store.DeltaPath(from, to)
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
+		dispatched := false
 		if to == c.store.TargetHash() && c.store.HasBinary(from) {
-			c.store.StartDeltaGeneration(from)
+			dispatched = c.store.StartDeltaGeneration(from)
 		}
+		c.logger.Info("delta not cached",
+			"op", "delta_get", "transport", "coap",
+			"from", from, "to", to, "async_dispatched", dispatched,
+		)
 		c.respond(w, codes.NotFound, message.TextPlain, nil)
 		return
 	}
 	if err != nil {
-		c.logger.Error("open delta (coap)", "from", from, "to", to, "err", err)
+		c.logger.Error("open delta",
+			"op", "delta_get", "transport", "coap", "from", from, "to", to, "err", err,
+		)
 		c.respond(w, codes.InternalServerError, message.TextPlain, nil)
 		return
+	}
+	if info, statErr := f.Stat(); statErr == nil {
+		c.logger.Info("delta served",
+			"op", "delta_get", "transport", "coap",
+			"from", from, "to", to, "size", info.Size(),
+		)
 	}
 	// go-coap auto-applies Block2 when the body is a sized ReadSeeker; *os.File
 	// qualifies. Closing is the library's responsibility once it has read the

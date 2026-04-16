@@ -33,6 +33,7 @@ Sigue los 18 pasos del `prompt-ota-updater.md §Implementation Order`. Cada paso
 ## Alcance extendido
 
 - **El agente debe poder usarse como librería Go embebible** en cualquier ejecutable del usuario (decisión 2026-04-16). Diseñar la API pensando en consumidor externo desde el paso 10 (nombres exportados, logger inyectable, health-check y self-restart pluggables, sin globales). Mover a `pkg/agent/` (o `pkg/updater/`) en paso 18. `cmd/edge-agent/main.go` queda como wrapper delgado. Documentar ejemplo de embedding en README.
+- **Escala objetivo del servidor: miles de agentes NB-IoT** (decisión 2026-04-16). Robustez no opcional. Patrones obligatorios: cache de manifests firmados, semáforo de generación de deltas, límite de body en handlers, middleware de panic recovery en HTTP y CoAP, timeouts estrictos en `http.Server`, graceful shutdown, logs en cada request. Rate-limiting y métricas anotadas como siguientes pasos. Ver memoria `project_server_scale.md`.
 
 ## Decisiones CoAP (agente + servidor)
 
@@ -46,6 +47,7 @@ Decididas 2026-04-16:
 ## Decisiones de proyecto
 
 - **Firma Ed25519 sobre `targetHash || deltaHash`** (opción B, decidida 2026-04-16). El payload canónico lo construye `protocol.ManifestSigningPayload`. Permite al agente abortar una descarga corrupta antes de parchear (ahorra downlink NB-IoT), sin renunciar a la autenticidad del binario activado. Coste: firma por-par `(from,to)`, marginal con Ed25519. **Documentación autoritativa en [`docs/signing.md`](docs/signing.md)** — cualquier cambio que toque firmas debe actualizar ese fichero en el mismo commit.
+- **Logging con `log/slog` (stdlib)**, nivel configurable y **cambiable en runtime** (decidido 2026-04-16). Config: `logging.level` (`debug|info|warn|error`) y `logging.format` (`text|json`). En runtime: `POST /admin/loglevel` con el mismo bearer token que `/admin/reload`. Niveles: DEBUG detalles internos, INFO operaciones normales, WARN anomalías recuperables, ERROR fallos. Campos obligatorios: `device_id`, `from`, `to`, `remote`, `op` en servidor; `device_id`, `version_hash`, `operation` en agente.
 - **Claves**: PKCS#8 PEM para privada (`server.key`, 0600), PKIX PEM para pública (`agent.pub`, 0644). Generadas con `go run ./tools/keygen -out <dir>`.
 - **`keygen` se niega a sobrescribir** ficheros existentes (O_EXCL). Destruir claves es manual y explícito.
 - **Tags duales JSON + CBOR** en `internal/protocol/messages.go` con claves CBOR enteras (compactas). Un único tipo por mensaje para HTTP y CoAP.
@@ -96,7 +98,7 @@ task clean              # rm bin/ y store/deltas/
 - [x] Paso 6 — `internal/server/manifest.go` (con tests: target current, unknown source, delta cached con firma verificada, delta async)
 - [x] Paso 7 — `internal/server/http_handler.go` (con tests: heartbeat 3 caminos, delta full/Range/404+async/traversal, report, health) + `docs/signing.md`
 - [x] Paso 8 — `internal/server/coap_handler.go` (go-coap v3, CBOR, Block2 auto; tests: heartbeat current/cached+firma, delta full/404+async, report)
-- [ ] Paso 9 — `internal/server/config.go` + `cmd/update-server/main.go` (**reinicio no permitido**; (a) `Store.Reload()` con `RWMutex`, (b) watcher fsnotify con debounce sobre el target binary, (c) endpoint `POST /admin/reload` con **bearer token estático** (`Authorization: Bearer <token>`, `admin.token` en `server.yaml`, comparación en tiempo constante). Decidido 2026-04-16.)
+- [ ] Paso 9 — `internal/server/config.go` + `cmd/update-server/main.go` (**reinicio no permitido**; (a) `Store.Reload()` con `RWMutex`, (b) watcher fsnotify con debounce sobre el target binary, (c) endpoint `POST /admin/reload` con **bearer token estático** (`Authorization: Bearer <token>`, `admin.token` en `server.yaml`, comparación en tiempo constante), (d) logger `slog` con `LevelVar` configurable en YAML y endpoint `POST /admin/loglevel` con el mismo bearer token. Decidido 2026-04-16.)
 - [ ] Paso 10 — `internal/agent/config.go`
 - [ ] Paso 11 — `internal/agent/slots.go`
 - [ ] Paso 12 — `internal/agent/downloader.go`

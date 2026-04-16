@@ -40,7 +40,17 @@ type Store struct {
 
 	mu       sync.RWMutex
 	binCache map[string][]byte
+
+	// deltaSlots bounds how many bsdiff generations can run concurrently.
+	// bsdiff is CPU- and RAM-heavy (suffix sort of the full binary). Under
+	// bursts of heartbeats from many distinct source versions, uncapped
+	// parallelism would OOM the server.
+	deltaSlots chan struct{}
 }
+
+// DefaultDeltaGenConcurrency is the cap on concurrent bsdiff runs. Two keeps
+// CPU spikes manageable on modest VMs while still hiding some I/O latency.
+const DefaultDeltaGenConcurrency = 2
 
 // Open initializes a Store. The target binary is read into memory (required
 // for bsdiff), its SHA-256 is computed, and it is persisted in binariesDir as
@@ -68,6 +78,7 @@ func Open(ctx context.Context, binariesDir, deltasDir, targetPath string, logger
 		targetBin:   data,
 		targetHash:  hash,
 		binCache:    map[string][]byte{hash: data},
+		deltaSlots:  make(chan struct{}, DefaultDeltaGenConcurrency),
 	}
 
 	targetStorePath := s.binaryPath(hash)
@@ -160,18 +171,30 @@ func (s *Store) StartDeltaGeneration(fromHash string) bool {
 }
 
 // generateAndCache is the shared work unit behind EnsureDelta and
-// StartDeltaGeneration. It re-checks the cache after acquiring the
-// singleflight slot so a recently-finished peer wins the race cleanly.
+// StartDeltaGeneration. It acquires a slot on deltaSlots (bounded bsdiff
+// concurrency) before spending memory and CPU, and re-checks the cache
+// after entering the singleflight slot so a recently-finished peer wins
+// the race cleanly.
 func (s *Store) generateAndCache(fromHash string) (string, error) {
 	out := s.DeltaPath(fromHash, s.targetHash)
 	if fileExists(out) {
 		return out, nil
 	}
+	s.deltaSlots <- struct{}{}
+	defer func() { <-s.deltaSlots }()
+
+	// Re-check after acquiring the slot: a peer may have finished while we
+	// were queued for CPU, in which case we can short-circuit without ever
+	// touching bsdiff.
+	if fileExists(out) {
+		return out, nil
+	}
+
 	oldBin, err := s.loadBinary(fromHash)
 	if err != nil {
 		return "", err
 	}
-	s.logger.Info("generating delta", "from", fromHash, "to", s.targetHash)
+	s.logger.Info("generating delta", "from", fromHash, "to", s.targetHash, "op", "delta_generate")
 	patch, err := delta.Generate(oldBin, s.targetBin)
 	if err != nil {
 		return "", fmt.Errorf("generate delta: %w", err)
@@ -180,7 +203,7 @@ func (s *Store) generateAndCache(fromHash string) (string, error) {
 		return "", fmt.Errorf("write delta: %w", err)
 	}
 	s.logger.Info("delta cached",
-		"from", fromHash, "to", s.targetHash, "size", len(patch),
+		"from", fromHash, "to", s.targetHash, "size", len(patch), "op", "delta_cache",
 	)
 	return out, nil
 }

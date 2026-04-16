@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 
 	"github.com/amplia/ota-updater/internal/crypto"
 	"github.com/amplia/ota-updater/internal/protocol"
@@ -23,6 +24,11 @@ type ManifesterConfig struct {
 
 // Manifester builds signed ManifestResponse payloads in response to agent
 // heartbeats. It does not speak any transport — it just produces the struct.
+//
+// For scale (thousands of agents), signed responses are cached in memory
+// keyed by (fromHash, targetHash). Cache entries are immutable; callers
+// receive a shared pointer and must NOT mutate it. Call Invalidate() after
+// changing the target binary (see Store.Reload at step 9).
 type Manifester struct {
 	store         *Store
 	priv          ed25519.PrivateKey
@@ -30,6 +36,9 @@ type Manifester struct {
 	retryAfter    int
 	targetVersion string
 	logger        *slog.Logger
+
+	mu    sync.RWMutex
+	cache map[string]*protocol.ManifestResponse
 }
 
 // NewManifester returns a Manifester using the given store for delta
@@ -51,7 +60,17 @@ func NewManifester(store *Store, priv ed25519.PrivateKey, cfg ManifesterConfig, 
 		retryAfter:    cfg.RetryAfter,
 		targetVersion: cfg.TargetVersion,
 		logger:        logger,
+		cache:         make(map[string]*protocol.ManifestResponse),
 	}
+}
+
+// Invalidate drops every cached manifest. Call after the target binary
+// changes (Store.Reload) so that the next heartbeat rebuilds a fresh,
+// correctly-signed response for the new target.
+func (m *Manifester) Invalidate() {
+	m.mu.Lock()
+	clear(m.cache)
+	m.mu.Unlock()
 }
 
 // Build produces a ManifestResponse for the given heartbeat. Possible
@@ -61,7 +80,7 @@ func NewManifester(store *Store, priv ed25519.PrivateKey, cfg ManifesterConfig, 
 //   - server doesn't know the source → UpdateAvailable=false (logged warning)
 //   - delta not yet cached           → UpdateAvailable=true, RetryAfter>0,
 //     asynchronous generation dispatched
-//   - delta cached                   → full signed manifest
+//   - delta cached                   → full signed manifest (memoized)
 func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protocol.ManifestResponse, error) {
 	targetHash := m.store.TargetHash()
 
@@ -94,6 +113,11 @@ func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protoc
 		}, nil
 	}
 
+	key := hb.VersionHash + "_" + targetHash
+	if cached := m.cacheGet(key); cached != nil {
+		return cached, nil
+	}
+
 	deltaPath := m.store.DeltaPath(hb.VersionHash, targetHash)
 	data, err := os.ReadFile(deltaPath)
 	if err != nil {
@@ -112,7 +136,7 @@ func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protoc
 		return nil, fmt.Errorf("sign manifest: %w", err)
 	}
 
-	return &protocol.ManifestResponse{
+	resp := &protocol.ManifestResponse{
 		UpdateAvailable: true,
 		TargetVersion:   m.targetVersion,
 		TargetHash:      targetHash,
@@ -122,7 +146,27 @@ func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protoc
 		TotalChunks:     chunkCount(size, m.chunkSize),
 		Signature:       hex.EncodeToString(sig),
 		DeltaEndpoint:   protocol.DeltaPath(hb.VersionHash, targetHash),
-	}, nil
+	}
+	m.cachePut(key, resp)
+	m.logger.Info("manifest built and cached",
+		"device_id", hb.DeviceID,
+		"from", hb.VersionHash,
+		"to", targetHash,
+		"delta_size", size,
+	)
+	return resp, nil
+}
+
+func (m *Manifester) cacheGet(key string) *protocol.ManifestResponse {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cache[key]
+}
+
+func (m *Manifester) cachePut(key string, resp *protocol.ManifestResponse) {
+	m.mu.Lock()
+	m.cache[key] = resp
+	m.mu.Unlock()
 }
 
 func chunkCount(size int64, chunk int) int {
