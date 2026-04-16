@@ -14,7 +14,7 @@ Ships two binaries plus a keygen tool.
 
 | What | Where | Role |
 |---|---|---|
-| `update-server` | `cmd/update-server/` *(pending, step 9)* | Serves signed manifests and compressed delta patches over HTTP and CoAP. |
+| `update-server` | `cmd/update-server/` | Serves signed manifests and compressed delta patches over HTTP and CoAP. fsnotify auto-reload; admin control plane (`/admin/reload`, `/admin/loglevel`) behind a Bearer token. |
 | `edge-agent` | `cmd/edge-agent/` *(pending, step 15)* | Runs on the device. Heartbeats, downloads deltas, applies patches, manages A/B slots and rollback. Will also be available as a Go library (`pkg/agent/`) so any Go executable can embed update logic. |
 | `keygen` | `tools/keygen/` | Generates the Ed25519 keypair once. |
 
@@ -77,24 +77,36 @@ The server then computes the new `target_hash`, regenerates deltas
 on-demand as agents check in, and signs each manifest on the fly with
 the in-memory private key. **No per-release signing command to run.**
 
-> The auto-reload + admin endpoint are implemented at step 9. Until
-> that step lands, reload means a server restart.
+### Running the server
+
+```sh
+task build-server
+./bin/update-server -config ./configs/server.yaml
+```
+
+An example config ships at `configs/server.yaml`. Minimum required
+fields: `crypto.private_key`, `target.binary`, `admin.token`. The rest
+have sensible defaults (HTTP on `:8080`, CoAP on `:5683`, text logs at
+INFO). Send `SIGINT` or `SIGTERM` for a graceful shutdown that honors
+`http.shutdown_timeout` (default `15s`).
 
 ---
 
-## Admin endpoint: `POST /admin/reload`
+## Admin control plane
 
-Explicit reload trigger, useful in CI/CD pipelines that want a
-synchronous confirmation rather than waiting for the filesystem watcher.
+Both admin endpoints share one authentication scheme: **static Bearer
+token**, configured in `server.yaml` under `admin.token`. Requests must
+carry `Authorization: Bearer <token>`; the server compares in constant
+time. Mismatch or missing header → `401 Unauthorized`.
 
-**Authentication: static Bearer token.**
+The endpoints are intended for **internal networks or loopback**. Expose
+them only where you control who reaches them (reverse proxy + ACL, VPN,
+loopback-only bind).
 
-- Token is configured in `server.yaml` under `admin.token`.
-- Requests must carry `Authorization: Bearer <token>`.
-- Server compares tokens in constant time.
-- Mismatch or missing header → `401 Unauthorized`.
+### `POST /admin/reload`
 
-### Example
+Explicit reload trigger — useful in CI/CD pipelines that want synchronous
+confirmation rather than waiting for the filesystem watcher.
 
 ```sh
 curl -X POST \
@@ -102,25 +114,46 @@ curl -X POST \
   http://update.example.com:8080/admin/reload
 ```
 
-### Response
+Responses:
 
-- `200 OK` with JSON `{"target_hash": "<sha256-hex>"}` on success.
+- `200 OK` → `{"target_hash": "<new-sha>", "previous_hash": "<old-sha>"}`.
 - `401 Unauthorized` on auth failure.
-- `500 Internal Server Error` if the reload itself failed (for example,
-  the target file is missing or unreadable). The previous target
-  remains active — the server never ends up in a broken state.
+- `500 Internal Server Error` if the reload itself failed (e.g. target
+  file missing). The previous target remains active — the server never
+  ends up in a broken state.
+
+The reload also invalidates the in-memory signed-manifest cache so the
+next heartbeat produces a manifest signed over the new `target_hash`.
+
+### `POST /admin/loglevel`
+
+Change the log level at runtime without restarting or reopening the log
+sink. Accepts JSON `{"level": "<level>"}` where level is one of
+`debug|info|warn|error`.
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"level":"debug"}' \
+  http://update.example.com:8080/admin/loglevel
+```
+
+Responses:
+
+- `200 OK` → `{"level":"debug"}` when applied.
+- `400 Bad Request` for unknown levels or malformed JSON.
+- `401 Unauthorized` on auth failure.
 
 ### Operational notes
 
-- The endpoint is intended for **internal networks or loopback**.
-  Expose it only where you can control who reaches it. Combine with a
-  reverse proxy + ACL if needed.
-- Rotating the token: edit `server.yaml`, then call `/admin/reload`
-  yourself with the new token — the config is re-read as part of the
-  reload path. (Rotation details finalized at step 9.)
 - Old cached deltas (`{from}_{oldTarget}.delta.zst`) remain on disk
-  after a reload but are never served: the new `target_hash` makes
-  them unreachable. Prune manually or via future tooling.
+  after a reload but are never served: the new `target_hash` makes them
+  unreachable. Prune manually or via future tooling.
+- The server caps body size (4 KiB) on heartbeat/report, panic-recovers
+  every handler into a structured 500/5.00 response, and bounds
+  concurrent bsdiff runs to protect CPU/RAM under bursty load from many
+  distinct source versions.
 
 ---
 
