@@ -31,15 +31,18 @@ var ErrBinaryNotFound = errors.New("source binary not found in store")
 type Store struct {
 	binariesDir string
 	deltasDir   string
+	targetPath  string // source-of-truth for Reload
 	logger      *slog.Logger
 
+	// mu guards targetBin, targetHash and binCache. Acquiring it briefly lets
+	// Reload swap the target state while in-flight operations keep working on
+	// the snapshot they captured before the swap.
+	mu         sync.RWMutex
 	targetBin  []byte
 	targetHash string
+	binCache   map[string][]byte
 
 	group singleflight.Group
-
-	mu       sync.RWMutex
-	binCache map[string][]byte
 
 	// deltaSlots bounds how many bsdiff generations can run concurrently.
 	// bsdiff is CPU- and RAM-heavy (suffix sort of the full binary). Under
@@ -74,6 +77,7 @@ func Open(ctx context.Context, binariesDir, deltasDir, targetPath string, logger
 	s := &Store{
 		binariesDir: binariesDir,
 		deltasDir:   deltasDir,
+		targetPath:  targetPath,
 		logger:      logger,
 		targetBin:   data,
 		targetHash:  hash,
@@ -100,11 +104,29 @@ func Open(ctx context.Context, binariesDir, deltasDir, targetPath string, logger
 }
 
 // TargetHash returns the SHA-256 hex of the current target binary.
-func (s *Store) TargetHash() string { return s.targetHash }
+func (s *Store) TargetHash() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.targetHash
+}
 
 // TargetBinary returns a reference to the in-memory target binary. Callers
-// must not mutate the returned slice.
-func (s *Store) TargetBinary() []byte { return s.targetBin }
+// must not mutate the returned slice. A concurrent Reload may swap the
+// backing slice afterwards; callers that store the reference see a frozen
+// snapshot.
+func (s *Store) TargetBinary() []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.targetBin
+}
+
+// targetSnapshot returns (targetHash, targetBin) under a single RLock, so
+// the two values are guaranteed to belong to the same generation.
+func (s *Store) targetSnapshot() (string, []byte) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.targetHash, s.targetBin
+}
 
 // DeltaPath returns the canonical on-disk path for the delta between two
 // hashes, whether or not the file exists.
@@ -115,8 +137,7 @@ func (s *Store) DeltaPath(fromHash, toHash string) string {
 // HasDelta reports whether the delta from fromHash to the current target is
 // already cached on disk.
 func (s *Store) HasDelta(fromHash string) bool {
-	_, err := os.Stat(s.DeltaPath(fromHash, s.targetHash))
-	return err == nil
+	return fileExists(s.DeltaPath(fromHash, s.TargetHash()))
 }
 
 // HasBinary reports whether a source binary with the given hash is registered
@@ -126,20 +147,65 @@ func (s *Store) HasBinary(hash string) bool {
 	return err == nil
 }
 
+// Reload re-reads the target binary from the path passed to Open, recomputes
+// its SHA-256, and atomically swaps the cached target state. If the read or
+// hash fails, the previous state is preserved unchanged so the server never
+// ends up unable to serve anything. Call Manifester.Invalidate() after a
+// successful reload to purge the signed-manifest cache.
+func (s *Store) Reload(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(s.targetPath)
+	if err != nil {
+		return fmt.Errorf("reload target %q: %w", s.targetPath, err)
+	}
+	sum := sha256.Sum256(data)
+	hash := hex.EncodeToString(sum[:])
+
+	s.mu.Lock()
+	prev := s.targetHash
+	s.targetBin = data
+	s.targetHash = hash
+	s.binCache[hash] = data
+	s.mu.Unlock()
+
+	// Best-effort persist of the (new) target under binariesDir so future
+	// agents still on this version can be served a delta FROM it. Failure is
+	// non-fatal — the in-memory state is already usable.
+	targetStorePath := s.binaryPath(hash)
+	if !fileExists(targetStorePath) {
+		if werr := writeAtomic(targetStorePath, data, 0o644); werr != nil {
+			s.logger.Warn("persist reloaded target failed",
+				"op", "store_reload", "target_hash", hash, "err", werr,
+			)
+		}
+	}
+	s.logger.Info("store target reloaded",
+		"op", "store_reload",
+		"previous_hash", prev,
+		"target_hash", hash,
+		"size", len(data),
+	)
+	return nil
+}
+
 // EnsureDelta returns the on-disk path of the delta from fromHash to the
 // current target, generating and caching it if necessary. Concurrent requests
 // for the same source hash are deduplicated via singleflight — only one
-// bsdiff generation runs at a time per (from, target) pair.
+// bsdiff generation runs at a time per (from, target) pair. A target snapshot
+// is captured at entry so a concurrent Reload doesn't cause split-brain work.
 func (s *Store) EnsureDelta(ctx context.Context, fromHash string) (string, error) {
-	if p := s.DeltaPath(fromHash, s.targetHash); fileExists(p) {
+	targetHash, targetBin := s.targetSnapshot()
+	if p := s.DeltaPath(fromHash, targetHash); fileExists(p) {
 		return p, nil
 	}
-	key := fromHash + "_" + s.targetHash
+	key := fromHash + "_" + targetHash
 	v, err, _ := s.group.Do(key, func() (any, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return s.generateAndCache(fromHash)
+		return s.generateAndCache(fromHash, targetHash, targetBin)
 	})
 	if err != nil {
 		return "", err
@@ -153,17 +219,18 @@ func (s *Store) EnsureDelta(ctx context.Context, fromHash string) (string, error
 // is unknown. Uses the same singleflight group as EnsureDelta, so concurrent
 // sync/async requests for the same pair coalesce into a single bsdiff run.
 func (s *Store) StartDeltaGeneration(fromHash string) bool {
-	if s.HasDelta(fromHash) || !s.HasBinary(fromHash) {
+	targetHash, targetBin := s.targetSnapshot()
+	if fileExists(s.DeltaPath(fromHash, targetHash)) || !s.HasBinary(fromHash) {
 		return false
 	}
-	key := fromHash + "_" + s.targetHash
+	key := fromHash + "_" + targetHash
 	go func() {
 		_, err, _ := s.group.Do(key, func() (any, error) {
-			return s.generateAndCache(fromHash)
+			return s.generateAndCache(fromHash, targetHash, targetBin)
 		})
 		if err != nil {
 			s.logger.Error("async delta generation failed",
-				"from", fromHash, "to", s.targetHash, "err", err,
+				"op", "delta_generate", "from", fromHash, "to", targetHash, "err", err,
 			)
 		}
 	}()
@@ -172,11 +239,10 @@ func (s *Store) StartDeltaGeneration(fromHash string) bool {
 
 // generateAndCache is the shared work unit behind EnsureDelta and
 // StartDeltaGeneration. It acquires a slot on deltaSlots (bounded bsdiff
-// concurrency) before spending memory and CPU, and re-checks the cache
-// after entering the singleflight slot so a recently-finished peer wins
-// the race cleanly.
-func (s *Store) generateAndCache(fromHash string) (string, error) {
-	out := s.DeltaPath(fromHash, s.targetHash)
+// concurrency) before spending memory and CPU. The (targetHash, targetBin)
+// snapshot is passed in so this method is free of locks on the target state.
+func (s *Store) generateAndCache(fromHash, targetHash string, targetBin []byte) (string, error) {
+	out := s.DeltaPath(fromHash, targetHash)
 	if fileExists(out) {
 		return out, nil
 	}
@@ -184,8 +250,7 @@ func (s *Store) generateAndCache(fromHash string) (string, error) {
 	defer func() { <-s.deltaSlots }()
 
 	// Re-check after acquiring the slot: a peer may have finished while we
-	// were queued for CPU, in which case we can short-circuit without ever
-	// touching bsdiff.
+	// were queued for CPU.
 	if fileExists(out) {
 		return out, nil
 	}
@@ -194,8 +259,8 @@ func (s *Store) generateAndCache(fromHash string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	s.logger.Info("generating delta", "from", fromHash, "to", s.targetHash, "op", "delta_generate")
-	patch, err := delta.Generate(oldBin, s.targetBin)
+	s.logger.Info("generating delta", "op", "delta_generate", "from", fromHash, "to", targetHash)
+	patch, err := delta.Generate(oldBin, targetBin)
 	if err != nil {
 		return "", fmt.Errorf("generate delta: %w", err)
 	}
@@ -203,7 +268,7 @@ func (s *Store) generateAndCache(fromHash string) (string, error) {
 		return "", fmt.Errorf("write delta: %w", err)
 	}
 	s.logger.Info("delta cached",
-		"from", fromHash, "to", s.targetHash, "size", len(patch), "op", "delta_cache",
+		"op", "delta_cache", "from", fromHash, "to", targetHash, "size", len(patch),
 	)
 	return out, nil
 }
