@@ -72,8 +72,8 @@ go build ./... && go vet ./...   # verificación rápida
 - [x] Paso 2 — `internal/crypto/` + `tools/keygen/`
 - [x] Paso 3 — `internal/compression/`
 - [x] Paso 4 — `internal/delta/` (round-trip test ya incluido)
-- [x] Paso 5 — `internal/server/store.go` (con tests: round-trip, cache hit, concurrent dedup)
-- [ ] Paso 6 — `internal/server/manifest.go`
+- [x] Paso 5 — `internal/server/store.go` (con tests: round-trip, cache hit, concurrent dedup, HasBinary, StartDeltaGeneration async)
+- [x] Paso 6 — `internal/server/manifest.go` (con tests: target current, unknown source, delta cached con firma verificada, delta async)
 - [ ] Paso 7 — `internal/server/http_handler.go`
 - [ ] Paso 8 — `internal/server/coap_handler.go`
 - [ ] Paso 9 — `internal/server/config.go` + `cmd/update-server/main.go`
