@@ -13,8 +13,8 @@ tasks:
     silent: true
 
   build:
-    desc: Build both binaries (static, CGO_ENABLED=0)
-    deps: [build-agent, build-server]
+    desc: Build both binaries (static, CGO_ENABLED=0); edge-agent lands at step 15
+    deps: [build-server]
 
   build-agent:
     desc: Build the edge-agent binary (static)
@@ -57,11 +57,11 @@ tasks:
       - go build ./...
 
   ci:
-    desc: Full local CI — vet, test, build
+    desc: Full local CI - vet, test, build-server
     cmds:
       - task: vet
       - task: test
-      - task: build
+      - task: build-server
 
   clean:
     desc: Remove build artifacts and cached deltas
