@@ -1,0 +1,70 @@
+version: '3'
+
+vars:
+  BIN_DIR: '{{.ROOT_DIR}}/bin'
+  KEYS_DIR: '{{.ROOT_DIR}}/keys'
+  LDFLAGS: '-s -w'
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  build:
+    desc: Build both binaries (static, CGO_ENABLED=0)
+    deps: [build-agent, build-server]
+
+  build-agent:
+    desc: Build the edge-agent binary (static)
+    cmds:
+      - CGO_ENABLED=0 go build -ldflags="{{.LDFLAGS}}" -o {{.BIN_DIR}}/edge-agent ./cmd/edge-agent
+    generates:
+      - '{{.BIN_DIR}}/edge-agent'
+
+  build-server:
+    desc: Build the update-server binary (static)
+    cmds:
+      - CGO_ENABLED=0 go build -ldflags="{{.LDFLAGS}}" -o {{.BIN_DIR}}/update-server ./cmd/update-server
+    generates:
+      - '{{.BIN_DIR}}/update-server'
+
+  keygen:
+    desc: Generate Ed25519 keypair (server.key + agent.pub) into ./keys
+    cmds:
+      - go run ./tools/keygen -out {{.KEYS_DIR}}
+
+  test:
+    desc: Run the full test suite with race detector
+    cmds:
+      - go test ./... -race -count=1
+
+  vet:
+    desc: Run go vet on all packages
+    cmds:
+      - go vet ./...
+
+  tidy:
+    desc: Run go mod tidy
+    cmds:
+      - go mod tidy
+
+  check:
+    desc: Quick local check (vet + full build, no tests)
+    cmds:
+      - go vet ./...
+      - go build ./...
+
+  ci:
+    desc: Full local CI — vet, test, build
+    cmds:
+      - task: vet
+      - task: test
+      - task: build
+
+  clean:
+    desc: Remove build artifacts and cached deltas
+    cmds:
+      - rm -rf {{.BIN_DIR}}
+      - rm -rf {{.ROOT_DIR}}/store/deltas

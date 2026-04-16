@@ -18,15 +18,26 @@ Ships two binaries plus a keygen tool.
 | `edge-agent` | `cmd/edge-agent/` *(pending, step 15)* | Runs on the device. Heartbeats, downloads deltas, applies patches, manages A/B slots and rollback. Will also be available as a Go library (`pkg/agent/`) so any Go executable can embed update logic. |
 | `keygen` | `tools/keygen/` | Generates the Ed25519 keypair once. |
 
+## Prerequisites
+
+- Go 1.22 or newer (project developed on 1.25).
+- [Task](https://taskfile.dev) runner:
+  ```sh
+  go install github.com/go-task/task/v3/cmd/task@latest
+  ```
+
 ## Build
 
 ```sh
-make build-server
-make build-agent
-make keygen
+task build            # both binaries (static, CGO_ENABLED=0)
+task build-server     # just the server
+task build-agent      # just the agent
+task keygen           # Ed25519 keypair in ./keys
+task test             # full suite with -race
+task --list           # see everything available
 ```
 
-All binaries are fully static (`CGO_ENABLED=0`).
+Binaries land in `./bin/`. Keys in `./keys/`.
 
 ---
 
@@ -38,7 +49,7 @@ restarts out of the release loop**.
 ### Once, at first setup
 
 ```sh
-make keygen
+task keygen
 # writes:
 #   keys/server.key   (0600, PKCS#8 PEM, Ed25519 private)  — stays on the server
 #   keys/agent.pub    (0644, PKIX PEM,  Ed25519 public)    — ship with the agent/firmware
