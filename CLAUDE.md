@@ -34,6 +34,15 @@ Sigue los 18 pasos del `prompt-ota-updater.md §Implementation Order`. Cada paso
 
 - **El agente debe poder usarse como librería Go embebible** en cualquier ejecutable del usuario (decisión 2026-04-16). Diseñar la API pensando en consumidor externo desde el paso 10 (nombres exportados, logger inyectable, health-check y self-restart pluggables, sin globales). Mover a `pkg/agent/` (o `pkg/updater/`) en paso 18. `cmd/edge-agent/main.go` queda como wrapper delgado. Documentar ejemplo de embedding en README.
 
+## Decisiones CoAP (agente + servidor)
+
+Decididas 2026-04-16:
+
+- **Sin DTLS de momento.** Sólo `coap://` (UDP plano, puerto 5683). Añadir `coaps://` con PSK queda como extensión futura si hace falta.
+- **Fallback preferred-with-one-shot** en el agente: intenta el transport preferido; si falla durante un ciclo, reintenta UNA vez con el otro; el siguiente ciclo vuelve al preferido. No "sticky" al fallback.
+- **Block size por defecto: 512 bytes** (RFC 7959). Configurable 16..1024. Razonable para NB-IoT sin arriesgar fragmentación IP.
+- **Serialización CoAP: CBOR** (tags `cbor:"N,keyasint"` ya en `internal/protocol/messages.go`). HTTP sigue con JSON. Servidor responde según content-type/accept.
+
 ## Decisiones de proyecto
 
 - **Firma Ed25519 sobre `targetHash || deltaHash`** (opción B, decidida 2026-04-16). El payload canónico lo construye `protocol.ManifestSigningPayload`. Permite al agente abortar una descarga corrupta antes de parchear (ahorra downlink NB-IoT), sin renunciar a la autenticidad del binario activado. Coste: firma por-par `(from,to)`, marginal con Ed25519. **Documentación autoritativa en [`docs/signing.md`](docs/signing.md)** — cualquier cambio que toque firmas debe actualizar ese fichero en el mismo commit.
@@ -79,7 +88,7 @@ go build ./... && go vet ./...   # verificación rápida
 - [x] Paso 5 — `internal/server/store.go` (con tests: round-trip, cache hit, concurrent dedup, HasBinary, StartDeltaGeneration async)
 - [x] Paso 6 — `internal/server/manifest.go` (con tests: target current, unknown source, delta cached con firma verificada, delta async)
 - [x] Paso 7 — `internal/server/http_handler.go` (con tests: heartbeat 3 caminos, delta full/Range/404+async/traversal, report, health) + `docs/signing.md`
-- [ ] Paso 8 — `internal/server/coap_handler.go`
+- [x] Paso 8 — `internal/server/coap_handler.go` (go-coap v3, CBOR, Block2 auto; tests: heartbeat current/cached+firma, delta full/404+async, report)
 - [ ] Paso 9 — `internal/server/config.go` + `cmd/update-server/main.go` (**reinicio no permitido**; (a) `Store.Reload()` con `RWMutex`, (b) watcher fsnotify con debounce sobre el target binary, (c) endpoint `POST /admin/reload` con **bearer token estático** (`Authorization: Bearer <token>`, `admin.token` en `server.yaml`, comparación en tiempo constante). Decidido 2026-04-16.)
 - [ ] Paso 10 — `internal/agent/config.go`
 - [ ] Paso 11 — `internal/agent/slots.go`
