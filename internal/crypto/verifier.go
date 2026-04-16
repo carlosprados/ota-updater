@@ -38,13 +38,13 @@ func LoadPublicKey(path string) (ed25519.PublicKey, error) {
 	return pub, nil
 }
 
-// VerifyHash verifies an Ed25519 signature over the given raw hash bytes.
+// Verify checks an Ed25519 signature over the given message bytes.
 // Returns ErrInvalidSignature when the signature does not match.
-func VerifyHash(pub ed25519.PublicKey, hash, sig []byte) error {
+func Verify(pub ed25519.PublicKey, msg, sig []byte) error {
 	if len(pub) != ed25519.PublicKeySize {
 		return fmt.Errorf("invalid public key size %d", len(pub))
 	}
-	if !ed25519.Verify(pub, hash, sig) {
+	if !ed25519.Verify(pub, msg, sig) {
 		return ErrInvalidSignature
 	}
 	return nil
