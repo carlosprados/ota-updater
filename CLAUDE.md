@@ -100,7 +100,7 @@ task clean              # rm bin/ y store/deltas/
 - [x] Paso 8 — `internal/server/coap_handler.go` (go-coap v3, CBOR, Block2 auto; tests: heartbeat current/cached+firma, delta full/404+async, report)
 - [x] Paso 9 — `internal/server/config.go` + `cmd/update-server/main.go` (reinicio no permitido; `Store.Reload` con `RWMutex`, watcher fsnotify con debounce, `POST /admin/reload` con bearer estático, `LevelVar` + `POST /admin/loglevel`, graceful shutdown SIGINT/SIGTERM, timeouts estrictos, `configs/server.yaml` de ejemplo)
 - [x] Paso 10 — `internal/agent/config.go` + `configs/agent.yaml` (tipos exportados para uso librería; `Transport` type-safe; `ApplyDefaults`/`Validate` públicos; tests incluyen flujo library-no-YAML)
-- [ ] Paso 11 — `internal/agent/slots.go`
+- [x] Paso 11 — `internal/agent/slots.go` (SlotManager A/B con Active/Inactive/WriteToInactive/Swap/Rollback; symlink swap atómico via tmp+rename; tests cubren active/inactive, atomicity, swap/rollback, inactive intact, validaciones)
 - [ ] Paso 12 — `internal/agent/downloader.go`
 - [ ] Paso 13 — `internal/agent/watchdog.go`
 - [ ] Paso 14 — `internal/agent/updater.go`
