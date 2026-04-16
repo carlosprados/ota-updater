@@ -1,0 +1,9 @@
+/bin/
+/keys/
+/store/
+*.test
+*.out
+*.swp
+.DS_Store
+.idea/
+.vscode/
