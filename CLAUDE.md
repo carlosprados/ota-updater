@@ -30,9 +30,13 @@ configs/{agent,server}.yaml
 
 Sigue los 18 pasos del `prompt-ota-updater.md §Implementation Order`. Cada paso debe **compilar y pasar tests** antes del siguiente. Estado actual al final de este fichero.
 
+## Alcance extendido
+
+- **El agente debe poder usarse como librería Go embebible** en cualquier ejecutable del usuario (decisión 2026-04-16). Diseñar la API pensando en consumidor externo desde el paso 10 (nombres exportados, logger inyectable, health-check y self-restart pluggables, sin globales). Mover a `pkg/agent/` (o `pkg/updater/`) en paso 18. `cmd/edge-agent/main.go` queda como wrapper delgado. Documentar ejemplo de embedding en README.
+
 ## Decisiones de proyecto
 
-- **Firma Ed25519 sobre `targetHash || deltaHash`** (opción B, decidida 2026-04-16). El payload canónico lo construye `protocol.ManifestSigningPayload`. Permite al agente abortar una descarga corrupta antes de parchear (ahorra downlink NB-IoT), sin renunciar a la autenticidad del binario activado. Coste: firma por-par `(from,to)`, marginal con Ed25519.
+- **Firma Ed25519 sobre `targetHash || deltaHash`** (opción B, decidida 2026-04-16). El payload canónico lo construye `protocol.ManifestSigningPayload`. Permite al agente abortar una descarga corrupta antes de parchear (ahorra downlink NB-IoT), sin renunciar a la autenticidad del binario activado. Coste: firma por-par `(from,to)`, marginal con Ed25519. **Documentación autoritativa en [`docs/signing.md`](docs/signing.md)** — cualquier cambio que toque firmas debe actualizar ese fichero en el mismo commit.
 - **Claves**: PKCS#8 PEM para privada (`server.key`, 0600), PKIX PEM para pública (`agent.pub`, 0644). Generadas con `go run ./tools/keygen -out <dir>`.
 - **`keygen` se niega a sobrescribir** ficheros existentes (O_EXCL). Destruir claves es manual y explícito.
 - **Tags duales JSON + CBOR** en `internal/protocol/messages.go` con claves CBOR enteras (compactas). Un único tipo por mensaje para HTTP y CoAP.
@@ -74,9 +78,9 @@ go build ./... && go vet ./...   # verificación rápida
 - [x] Paso 4 — `internal/delta/` (round-trip test ya incluido)
 - [x] Paso 5 — `internal/server/store.go` (con tests: round-trip, cache hit, concurrent dedup, HasBinary, StartDeltaGeneration async)
 - [x] Paso 6 — `internal/server/manifest.go` (con tests: target current, unknown source, delta cached con firma verificada, delta async)
-- [ ] Paso 7 — `internal/server/http_handler.go`
+- [x] Paso 7 — `internal/server/http_handler.go` (con tests: heartbeat 3 caminos, delta full/Range/404+async/traversal, report, health) + `docs/signing.md`
 - [ ] Paso 8 — `internal/server/coap_handler.go`
-- [ ] Paso 9 — `internal/server/config.go` + `cmd/update-server/main.go`
+- [ ] Paso 9 — `internal/server/config.go` + `cmd/update-server/main.go` (**incluir `Store.Reload()` con RWMutex + handler `SIGHUP` para recargar target sin reiniciar** — decidido 2026-04-16)
 - [ ] Paso 10 — `internal/agent/config.go`
 - [ ] Paso 11 — `internal/agent/slots.go`
 - [ ] Paso 12 — `internal/agent/downloader.go`

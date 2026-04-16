@@ -38,8 +38,12 @@ func LoadPublicKey(path string) (ed25519.PublicKey, error) {
 	return pub, nil
 }
 
-// Verify checks an Ed25519 signature over the given message bytes.
-// Returns ErrInvalidSignature when the signature does not match.
+// Verify checks an Ed25519 signature over the given message bytes. Returns
+// ErrInvalidSignature when the signature does not match.
+//
+// Agents must call Verify BEFORE downloading the delta (step 2 of the
+// verification order in docs/signing.md §5): a failed signature check means
+// the manifest is untrustworthy, so no bytes should be fetched.
 func Verify(pub ed25519.PublicKey, msg, sig []byte) error {
 	if len(pub) != ed25519.PublicKeySize {
 		return fmt.Errorf("invalid public key size %d", len(pub))
