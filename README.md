@@ -308,6 +308,111 @@ binary is supported.
 
 ---
 
+## Update policy (semver + auto-update)
+
+The agent decides whether to apply an available update based on its own
+**baked-in semver** versus `ManifestResponse.TargetVersion`, gated by two
+independent knobs in `configs/agent.yaml`:
+
+```yaml
+update:
+  auto_update: true                 # master switch
+  max_bump: "major"                 # none | patch | minor | major
+  unknown_version_policy: "deny"    # deny | allow when TargetVersion is not semver
+```
+
+- **`auto_update: false`** — the agent detects and logs updates but never
+  applies them automatically. Good for controlled fleets where rollouts
+  are triggered by an external control plane.
+- **`max_bump`** caps the size of the semver transition accepted
+  automatically when `auto_update: true`. An update whose bump exceeds
+  this cap is logged but not applied:
+  - `none` — block all automatic updates (equivalent to `auto_update: false`).
+  - `patch` — only accept `1.2.3 → 1.2.4`.
+  - `minor` — accept patch + minor (e.g. `1.2.3 → 1.3.0`).
+  - `major` — accept everything (default).
+- **`unknown_version_policy`** — what to do when the server's
+  `TargetVersion` is not valid semver (legacy labels, typos, tampering):
+  - `deny` (default) — refuse to apply. Conservative.
+  - `allow` — apply anyway, preserving the pre-semver behavior.
+
+### Injecting the agent's version at build time
+
+The agent learns its own version from an `ldflags`-injected string. The
+`Taskfile.yml` does this automatically from `git describe`:
+
+```bash
+task build-agent                    # bin/edge-agent reports `1.2.3` (or `abc1234-dirty`)
+bin/edge-agent -version             # prints the value
+```
+
+Manually (or from library embedders):
+
+```bash
+go build -ldflags="-X main.version=1.2.3" ./cmd/edge-agent
+```
+
+An empty version at runtime **disables** the semver gate entirely — the
+agent still reports every update available from the server. Operators who
+want strict gating always inject a version.
+
+### Manual triggers (bypass the policy for one cycle)
+
+When `auto_update: false` or when an update is blocked by `max_bump`, the
+operator can force a **single** cycle to apply anyway. Two equivalent
+mechanisms:
+
+**1. Sidecar file `<slots_dir>/.update_now`** — ops-friendly, accessible via
+SSH / ansible / systemd drop-in without agent code changes:
+
+```bash
+# On the device:
+touch /opt/agent/slots/.update_now
+```
+
+The next `RunOnce` detects the file, consumes it (removes it), and runs
+the cycle ignoring `auto_update` and `max_bump`. The file is consumed
+whether or not the cycle actually applies an update — this prevents a
+stuck trigger from repeatedly bypassing the policy on later cycles.
+
+**2. Library API `Updater.TriggerUpdate()`** — for embedders that own
+their own control plane:
+
+```go
+updater, _ := agent.NewUpdater(deps)
+
+// ... later, when your control plane says "go":
+updater.TriggerUpdate()
+
+// Next RunOnce cycle will ignore auto_update / max_bump exactly once.
+```
+
+Both triggers are one-shot and race-safe. They can be combined (an
+embedder may both touch the sidecar AND call `TriggerUpdate()`); the cycle
+still only skips the gate once.
+
+### Heartbeat includes version
+
+Each heartbeat now carries a `version` field (optional, free-form string
+that should be semver when the agent knows its own). The server logs it
+alongside `version_hash` so operators can query the fleet by human label
+instead of SHA only:
+
+```json
+{
+  "device_id": "edge-001",
+  "version_hash": "d2a3...",
+  "version": "1.2.3",
+  "hw_info": { "arch": "arm64", "os": "linux" },
+  "timestamp": 1713300000
+}
+```
+
+`version_hash` remains the authoritative identity on the wire; `version`
+is advisory.
+
+---
+
 ## Self-restart after swap (service manager compatibility)
 
 After a successful A/B swap the agent must re-exec so the freshly

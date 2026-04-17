@@ -5,10 +5,16 @@ package protocol
 
 // Heartbeat is sent by the agent to the server on each update check.
 type Heartbeat struct {
-	DeviceID    string `json:"device_id"    cbor:"1,keyasint"`
-	VersionHash string `json:"version_hash" cbor:"2,keyasint"` // SHA-256 hex of current running binary
-	HWInfo      HWInfo `json:"hw_info"      cbor:"3,keyasint"`
-	Timestamp   int64  `json:"timestamp"    cbor:"4,keyasint"` // unix seconds
+	DeviceID    string `json:"device_id"         cbor:"1,keyasint"`
+	VersionHash string `json:"version_hash"      cbor:"2,keyasint"` // SHA-256 hex of current running binary
+	HWInfo      HWInfo `json:"hw_info"           cbor:"3,keyasint"`
+	Timestamp   int64  `json:"timestamp"         cbor:"4,keyasint"` // unix seconds
+	// Version is the human-readable semver ("1.2.3") of the running binary,
+	// injected at build time via ldflags. Optional and advisory: the
+	// authoritative identity on the wire is VersionHash. Logged by the
+	// server for fleet observability and used by the agent to compare
+	// against ManifestResponse.TargetVersion under the update policy.
+	Version string `json:"version,omitempty" cbor:"5,keyasint,omitempty"`
 }
 
 // HWInfo describes the device runtime environment.

@@ -23,9 +23,22 @@ import (
 	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
+// version is the semver of this binary, set at build time with
+//   -ldflags="-X main.version=<tag>"
+// Taskfile.yml injects `git describe --tags --always --dirty` by default.
+// Empty string at runtime disables the agent's semver gating (all updates
+// are allowed regardless of max_bump).
+var version = "0.0.0-dev"
+
 func main() {
 	cfgPath := flag.String("config", "./configs/agent.yaml", "path to agent YAML config")
+	printVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *printVersion {
+		os.Stdout.WriteString(version + "\n")
+		return
+	}
 
 	if err := run(*cfgPath); err != nil {
 		slog.Error("edge-agent startup failed", "err", err)
@@ -102,13 +115,27 @@ func run(cfgPath string) error {
 		return fmt.Errorf("watchdog: %w", err)
 	}
 
+	// Resolve the YAML strings for the update policy so NewUpdater gets
+	// already-parsed enum values. cfg.Validate already rejected unknowns,
+	// so ParseMaxBump/ParseUnknownVersionPolicy here cannot fail.
+	maxBump, _ := agent.ParseMaxBump(cfg.Update.MaxBump)
+	unknownPolicy, _ := agent.ParseUnknownVersionPolicy(cfg.Update.UnknownVersionPolicy)
+	autoUpdate := true
+	if cfg.Update.AutoUpdate != nil {
+		autoUpdate = *cfg.Update.AutoUpdate
+	}
+
 	updater, err := agent.NewUpdater(agent.UpdaterDeps{
 		Config: agent.UpdaterConfig{
-			DeviceID:      cfg.Device.ID,
-			CheckInterval: cfg.Update.CheckInterval,
-			MaxRetries:    cfg.Update.MaxRetries,
-			RetryBackoff:  cfg.Update.RetryBackoff,
-			StateDir:      cfg.Device.SlotsDir,
+			DeviceID:             cfg.Device.ID,
+			Version:              version,
+			CheckInterval:        cfg.Update.CheckInterval,
+			MaxRetries:           cfg.Update.MaxRetries,
+			RetryBackoff:         cfg.Update.RetryBackoff,
+			StateDir:             cfg.Device.SlotsDir,
+			AutoUpdate:           autoUpdate,
+			MaxBump:              maxBump,
+			UnknownVersionPolicy: unknownPolicy,
 		},
 		Primary:   primary,
 		Fallback:  fallback,
@@ -129,10 +156,14 @@ func run(cfgPath string) error {
 	logger.Info("edge-agent starting",
 		"op", "startup",
 		"device_id", cfg.Device.ID,
+		"version", version,
 		"primary", primary.Client.Name(),
 		"fallback_enabled", fallback != nil,
 		"check_interval", cfg.Update.CheckInterval.String(),
 		"watchdog_timeout", cfg.Update.WatchdogTimeout.String(),
+		"auto_update", autoUpdate,
+		"max_bump", maxBump.String(),
+		"unknown_version_policy", unknownPolicy.String(),
 	)
 
 	err = updater.Run(ctx)

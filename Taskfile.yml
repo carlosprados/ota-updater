@@ -4,6 +4,10 @@ vars:
   BIN_DIR: '{{.ROOT_DIR}}/bin'
   KEYS_DIR: '{{.ROOT_DIR}}/keys'
   LDFLAGS: '-s -w'
+  # AGENT_VERSION: semver injected into cmd/edge-agent at build time.
+  # Falls back to `0.0.0-dev` when `git describe` can't find a tag.
+  AGENT_VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev
 
 tasks:
   default:
@@ -17,9 +21,9 @@ tasks:
     deps: [build-server, build-agent]
 
   build-agent:
-    desc: Build the edge-agent binary (static)
+    desc: Build the edge-agent binary (static, semver injected via ldflags)
     cmds:
-      - CGO_ENABLED=0 go build -ldflags="{{.LDFLAGS}}" -o {{.BIN_DIR}}/edge-agent ./cmd/edge-agent
+      - CGO_ENABLED=0 go build -ldflags="{{.LDFLAGS}} -X main.version={{.AGENT_VERSION}}" -o {{.BIN_DIR}}/edge-agent ./cmd/edge-agent
     generates:
       - '{{.BIN_DIR}}/edge-agent'
 

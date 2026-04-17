@@ -240,6 +240,9 @@ func setupE2E(t *testing.T) *e2eFixture {
 			CheckInterval: 50 * time.Millisecond,
 			MaxRetries:    3,
 			RetryBackoff:  10 * time.Millisecond,
+			// Mirror YAML defaults: gate off (empty Version) + auto_update=true.
+			AutoUpdate: true,
+			MaxBump:    agent.MaxBumpMajor,
 		},
 		Primary:   primary,
 		Slots:     slots,
