@@ -201,6 +201,119 @@ Full example in this README at step 18.
 
 ---
 
+## Self-restart after swap (service manager compatibility)
+
+After a successful A/B swap the agent must re-exec so the freshly
+activated binary takes over. The design is:
+
+- **Default strategy: `syscall.Exec`.** Replaces the running process
+  image with the new binary while keeping the **same PID, cgroup,
+  environment variables and inherited file descriptors**. No downtime
+  and no dependency on any particular service manager.
+- **Pluggable via the `RestartStrategy` interface.** Library consumers
+  that prefer a clean exit + supervisor-driven restart can inject
+  `ExitRestart` (ships in-box) or their own implementation.
+
+### systemd
+
+Fully compatible. systemd tracks services by PID and cgroup, both of
+which survive `syscall.Exec`.
+
+| `Type=` | Behavior after self-exec |
+|---|---|
+| `simple` / `exec` (most common) | Transparent. PID unchanged → service stays active. No `Restart=` cycle consumed. |
+| `notify` | The new binary must re-send `sd_notify(READY=1)`. `NOTIFY_SOCKET` survives the exec, so the helper used at first start works again. |
+| `forking` | Not relevant (we exec, we don't fork). |
+
+Additional notes:
+
+- `WatchdogSec=` (systemd hardware/software watchdog) — the
+  `NOTIFY_SOCKET` is inherited, so `WATCHDOG=1` pings resume from the
+  new binary without missing a beat.
+- `Restart=on-failure` + `StartLimitBurst=` — self-restart **does not
+  consume** the restart budget because no process exit happens. Only
+  real crashes count. This is usually what you want: you can distinguish
+  a buggy binary (crashes → systemd restart counter trips) from a clean
+  OTA handover.
+- `ExecStart=` should point at a **stable path** (typically the A/B
+  symlink, e.g. `/var/lib/edge-agent/slots/current/edge-agent`). On
+  first start systemd launches through the symlink; after a swap
+  `syscall.Exec` re-execs the binary the symlink now resolves to. If
+  the service ever crashes and systemd restarts it, it naturally picks
+  up the most recently activated slot.
+
+Minimal unit reference:
+
+```ini
+[Unit]
+Description=Edge Agent
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/var/lib/edge-agent/slots/current/edge-agent -config /etc/edge-agent.yaml
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Docker
+
+Fully compatible. `syscall.Exec` replaces the process image while
+keeping the PID, so a container whose entrypoint is the agent **does
+not die during self-update** — Docker keeps seeing PID 1 alive.
+
+Caveats specific to container deployments:
+
+- **Persist the A/B slots on a volume.** Writes to the container's
+  writable layer are lost on container restart. Mount `slots_dir` on
+  a named volume or bind mount so a rebuilt container finds the
+  previously activated slot:
+
+  ```yaml
+  services:
+    edge-agent:
+      image: your/edge-agent:bootstrap
+      volumes:
+        - agent-slots:/var/lib/edge-agent/slots
+        - agent-state:/var/lib/edge-agent/state
+      restart: unless-stopped
+  volumes:
+    agent-slots:
+    agent-state:
+  ```
+
+- **Signal handling at PID 1.** If the agent is PID 1 inside the
+  container it must handle `SIGTERM`/`SIGINT`; the agent does. If you
+  prefer a supervisor, run `tini`/`dumb-init` as PID 1 — the agent
+  becomes a child and `syscall.Exec` still works (the child's image is
+  replaced, tini keeps reaping).
+- **Bootstrap image is just a launcher.** The image only needs to
+  contain an initial agent binary. All future versions arrive via OTA
+  and land in the mounted slots volume. Image rebuilds are reserved for
+  infrastructure changes (base image, CA certs, etc.), not for
+  application updates.
+- **Restart policy.** Use `restart: unless-stopped` (or
+  `restart: always`) so a real crash is still caught, while normal
+  self-updates remain invisible to the Docker supervisor.
+
+### When to use `ExitRestart` instead
+
+Prefer the alternative `ExitRestart` strategy when:
+
+- The host supervisor enforces a "fresh process per start" invariant
+  (custom init, specific audit/logging pipeline, etc.).
+- You need systemd's `StartLimitBurst=` to count OTA-driven restarts
+  (unusual, but valid if you want a hard ceiling on update churn).
+- You are embedding the agent as a library and your own binary already
+  owns the self-restart path.
+
+In all other cases `syscall.Exec` is the right default.
+
+---
+
 ## Implementation progress
 
 Tracked as a checklist in `CLAUDE.md` (18-step plan from
