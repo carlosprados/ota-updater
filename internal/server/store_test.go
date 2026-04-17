@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/amplia/ota-updater/pkg/delta"
 )
@@ -150,3 +151,75 @@ func TestStore_EnsureDelta_Concurrent(t *testing.T) {
 		}
 	}
 }
+
+func TestStore_Close_WaitsForAsyncGenerations(t *testing.T) {
+	s, oldHash := storeFixture(t)
+
+	// Kick off an async generation. StartDeltaGeneration returns true once,
+	// then goes no-op if the delta is already cached — use a fresh source
+	// so the generation actually runs.
+	rng := rand.New(rand.NewSource(99))
+	otherOld := make([]byte, 256<<10)
+	_, _ = rng.Read(otherOld)
+	otherHash, err := s.RegisterBinary(otherOld)
+	if err != nil {
+		t.Fatalf("RegisterBinary: %v", err)
+	}
+	if !s.StartDeltaGeneration(otherHash) {
+		t.Fatalf("StartDeltaGeneration should have dispatched")
+	}
+	// Also dispatch the original fixture pair just for good measure.
+	_ = s.StartDeltaGeneration(oldHash)
+
+	// Close with a generous timeout. Must wait for both goroutines and
+	// return nil. The delta files must exist on disk afterwards.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := s.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !s.HasDelta(otherHash) {
+		t.Fatalf("async delta for otherHash should have been written before Close returned")
+	}
+}
+
+func TestStore_Close_NoAsyncWork_ReturnsImmediately(t *testing.T) {
+	s, _ := storeFixture(t)
+	// Nothing dispatched → Close must return right away regardless of the
+	// context deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := s.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+// We cannot trivially force bsdiff to exceed a deadline without a massive
+// input; a full "Close times out" assertion would be flaky on fast CI
+// hardware. The production path is covered by the architecture: Close
+// returns ctx.Err() when the waitgroup hasn't drained, which is
+// trivially seen in the Close implementation (select wait vs ctx.Done).
+//
+// What we DO assert here is that suffix path exists: a cancelled ctx
+// passed to Close with a pending goroutine returns ctx.Err(). We
+// simulate the "pending goroutine" by incrementing the wg manually
+// — the real StartDeltaGeneration always decrements via defer, so this
+// cannot deadlock beyond the test.
+func TestStore_Close_ContextCancelled_ReturnsContextErr(t *testing.T) {
+	s, _ := storeFixture(t)
+	// Manually add to the wg to simulate a pending async task that
+	// outlives our context. Done it inside a goroutine so we can resolve
+	// at the end of the test.
+	s.asyncWG.Add(1)
+	defer s.asyncWG.Done()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+	err := s.Close(ctx)
+	if err == nil {
+		t.Fatalf("Close should report ctx.Err when waitgroup not drained")
+	}
+}
+
+var _ = sync.Mutex{} // pin sync import (kept from earlier tests)
+var _ = time.Second  // pin time import for t.Second

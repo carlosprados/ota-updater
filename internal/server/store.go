@@ -92,6 +92,13 @@ type Store struct {
 	// bsdiff is CPU- and RAM-heavy (suffix sort of the full binary); under
 	// bursty loads uncapped parallelism would OOM the server.
 	deltaSlots chan struct{}
+
+	// asyncWG tracks all goroutines spawned by StartDeltaGeneration so
+	// Close(ctx) can wait for them before the process exits. bsdiff itself
+	// is not ctx-cancellable, so shutdown either waits for in-flight
+	// generations to finish or logs the ones still running when the ctx
+	// deadline expires.
+	asyncWG sync.WaitGroup
 }
 
 // Open initializes a Store from opts. The target binary is read, hashed,
@@ -281,13 +288,17 @@ func (s *Store) EnsureDelta(ctx context.Context, fromHash string) (string, error
 // StartDeltaGeneration dispatches an asynchronous delta generation for
 // fromHash → current target. Returns true when a task was dispatched, false
 // when the delta is already cached on disk or the source binary is unknown.
+// The spawned goroutine is tracked by Store.asyncWG so Close(ctx) can wait
+// for it before process shutdown.
 func (s *Store) StartDeltaGeneration(fromHash string) bool {
 	targetHash, targetBin := s.targetSnapshot()
 	if fileExists(s.DeltaPath(fromHash, targetHash)) || !s.HasBinary(fromHash) {
 		return false
 	}
 	key := fromHash + "_" + targetHash
+	s.asyncWG.Add(1)
 	go func() {
+		defer s.asyncWG.Done()
 		_, err, _ := s.genGroup.Do(key, func() (any, error) {
 			return s.generateAndCache(fromHash, targetHash, targetBin)
 		})
@@ -298,6 +309,34 @@ func (s *Store) StartDeltaGeneration(fromHash string) bool {
 		}
 	}()
 	return true
+}
+
+// Close blocks until every async delta generation spawned by
+// StartDeltaGeneration has finished, or ctx is done. Logs the number of
+// goroutines still running at deadline — bsdiff is not cancellable so the
+// caller cannot force them to stop; the choice is to wait longer or accept
+// that one or two .tmp-* files may be orphaned in deltasDir.
+//
+// Returns ctx.Err() if the wait was cut short, nil on clean drain. Safe to
+// call once; calling Close concurrently with StartDeltaGeneration is racy
+// by design — the expected usage is: stop HTTP/CoAP servers first (no new
+// StartDeltaGeneration calls will land), then Close.
+func (s *Store) Close(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		s.asyncWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		s.logger.Info("store closed cleanly", "op", "store_close")
+		return nil
+	case <-ctx.Done():
+		s.logger.Error("store close timed out with async generations still running",
+			"op", "store_close", "err", ctx.Err(),
+		)
+		return ctx.Err()
+	}
 }
 
 // generateAndCache runs one bsdiff under the concurrency slot, writes the

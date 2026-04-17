@@ -90,3 +90,49 @@ func TestWatcher_IgnoresUnrelatedFiles(t *testing.T) {
 		t.Fatalf("fired=%d on unrelated write, want 0", got)
 	}
 }
+
+func TestWatcher_CancelStopsPendingCallback(t *testing.T) {
+	// Regression: an event fires a debounce timer, then ctx is cancelled
+	// BEFORE the debounce window elapses. onChange must NOT be called.
+	// Previously (time.AfterFunc) this race existed.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target.bin")
+	if err := os.WriteFile(path, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var fired atomic.Int32
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// Long debounce so we can cancel before it elapses.
+	w := NewWatcher(path, 500*time.Millisecond, func() { fired.Add(1) }, logger)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = w.Run(ctx) }()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Trigger an event (arms the debounce timer).
+	if err := os.WriteFile(path, []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Give the event a beat to reach the watcher and arm the timer.
+	time.Sleep(100 * time.Millisecond)
+
+	// Now cancel well before the 500 ms debounce window.
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+
+	// Wait past the would-be fire time to ensure a leaked AfterFunc would
+	// have had its chance.
+	time.Sleep(600 * time.Millisecond)
+
+	if got := fired.Load(); got != 0 {
+		t.Fatalf("onChange fired %d times after cancel; want 0 (timer must have been stopped)", got)
+	}
+}

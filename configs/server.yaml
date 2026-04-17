@@ -43,9 +43,15 @@ target:
 
 admin:
   # Bearer token required for POST /admin/reload and POST /admin/loglevel.
-  # Keep this secret. For CI/CD, inject via environment manipulation of the
-  # config file; for production, run the endpoint on a private network.
-  token: "change-me-to-a-long-random-string"
+  # Minimum length: 32 characters (~128 bits of entropy). The server rejects
+  # shorter tokens at config load. Generate a fresh one with:
+  #
+  #   openssl rand -hex 16        # 32 hex chars
+  #   openssl rand -base64 24     # 32 base64 chars
+  #
+  # Keep this secret. Run the admin endpoints on a private network / loopback
+  # only — there is no rate limit on the middleware yet.
+  token: "change-me-openssl-rand-hex-16-here"
 
 logging:
   level: "info"                    # debug | info | warn | error
