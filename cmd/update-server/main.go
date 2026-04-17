@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -74,7 +75,8 @@ func run(cfgPath string) error {
 		CacheSize:     cfg.Manifest.CacheSize,
 	}, logger)
 
-	// fsnotify-based auto-reload of the target binary.
+	// fsnotify-based auto-reload of the target binary. Tracked so the main
+	// shutdown sequence can wait for it.
 	watcher := server.NewWatcher(cfg.Target.Binary, server.DefaultWatcherDebounce, func() {
 		reloadCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -87,7 +89,10 @@ func run(cfgPath string) error {
 			"op", "watcher_reload", "target_hash", store.TargetHash(),
 		)
 	}, logger)
+	var goroutines sync.WaitGroup
+	goroutines.Add(1)
 	go func() {
+		defer goroutines.Done()
 		if err := watcher.Run(ctx); err != nil {
 			logger.Error("watcher exited", "op", "watcher", "err", err)
 		}
@@ -162,6 +167,14 @@ func run(cfgPath string) error {
 		}
 	}
 
+	// Ordered shutdown, all bounded by the same timeout:
+	//   1. stop HTTP + CoAP (no more incoming requests / delta generations)
+	//   2. store.Close waits for in-flight bsdiff goroutines
+	//   3. watcher.Run observes ctx.Done and returns; wait on its goroutine
+	// bsdiff is NOT ctx-cancellable, so (2) may log "close timed out" if a
+	// generation is still running when the deadline expires. That just means
+	// one .tmp-* file may be orphaned in deltasDir; the dir is swept on next
+	// boot (planned, not yet implemented — PR-E item 7).
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
@@ -169,6 +182,22 @@ func run(cfgPath string) error {
 	}
 	coapServer.Stop()
 	_ = coapListener.Close()
+	if err := store.Close(shutdownCtx); err != nil {
+		logger.Error("store close", "op", "shutdown", "err", err)
+	}
+	// Wait for the watcher goroutine. Run returns as soon as ctx is done
+	// because we cancelled the root ctx above; if for some reason it doesn't,
+	// the shutdown timeout kicks in at the main() level.
+	waitCh := make(chan struct{})
+	go func() {
+		goroutines.Wait()
+		close(waitCh)
+	}()
+	select {
+	case <-waitCh:
+	case <-shutdownCtx.Done():
+		logger.Warn("shutdown timed out waiting for helper goroutines", "op", "shutdown")
+	}
 	logger.Info("shutdown complete", "op", "shutdown")
 	return nil
 }

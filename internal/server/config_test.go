@@ -3,6 +3,7 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,7 +25,7 @@ crypto:
 target:
   binary: "./store/binaries/latest"
 admin:
-  token: "abc123"
+  token: "a-strong-enough-token-of-32-chars"
 `)
 	cfg, err := LoadConfig(p)
 	if err != nil {
@@ -57,6 +58,24 @@ target:
 	}
 }
 
+func TestLoadConfig_ShortAdminTokenRejected(t *testing.T) {
+	p := writeYAML(t, `
+crypto:
+  private_key: "./keys/server.key"
+target:
+  binary: "./bin/latest"
+admin:
+  token: "short"
+`)
+	_, err := LoadConfig(p)
+	if err == nil {
+		t.Fatalf("expected error for short admin.token")
+	}
+	if !strings.Contains(err.Error(), "at least 32") {
+		t.Fatalf("err = %v, want mention of min length", err)
+	}
+}
+
 func TestLoadConfig_UnknownLogLevel(t *testing.T) {
 	p := writeYAML(t, `
 crypto:
@@ -64,7 +83,7 @@ crypto:
 target:
   binary: "b"
 admin:
-  token: "t"
+  token: "a-strong-enough-token-of-32-chars"
 logging:
   level: "trace"
 `)

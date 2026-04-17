@@ -55,6 +55,13 @@ type AdminYAMLConfig struct {
 	Token string `yaml:"token"` // static Bearer token for /admin/* endpoints
 }
 
+// adminTokenMinLen is the minimum accepted length for admin.token. Aimed at
+// ~128 bits of entropy when the token is random hex (32 chars = 128 bits)
+// or random base64 (22+ chars). The /admin/* endpoints have no rate limit
+// yet, so short tokens are trivially brute-forceable by anyone who can
+// reach the admin port.
+const adminTokenMinLen = 32
+
 // LoggingConfig selects verbosity and output format. Both values are
 // case-insensitive.
 type LoggingConfig struct {
@@ -142,6 +149,14 @@ func (c *Config) validate() error {
 	}
 	if c.Admin.Token == "" {
 		return errors.New("admin.token is required (bearer token for /admin/* endpoints)")
+	}
+	// Minimum length of 32 chars — roughly 128 bits of entropy when the
+	// token is random hex or base64. Short tokens are trivially brute-forced
+	// because /admin/* has no rate limit yet. Generate with e.g.
+	// `openssl rand -hex 16` (32 hex chars) or `openssl rand -base64 24`.
+	if n := len(c.Admin.Token); n < adminTokenMinLen {
+		return fmt.Errorf("admin.token too short: %d chars, need at least %d "+
+			"(generate with `openssl rand -hex 16`)", n, adminTokenMinLen)
 	}
 	if _, ok := parseLogLevel(c.Logging.Level); !ok {
 		return fmt.Errorf("logging.level: unknown %q (use debug|info|warn|error)", c.Logging.Level)

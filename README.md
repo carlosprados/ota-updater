@@ -100,9 +100,19 @@ token**, configured in `server.yaml` under `admin.token`. Requests must
 carry `Authorization: Bearer <token>`; the server compares in constant
 time. Mismatch or missing header → `401 Unauthorized`.
 
+**Token requirements**: the server rejects any `admin.token` shorter
+than 32 characters at config load, roughly 128 bits of entropy when
+the token is random hex or base64. Generate one with:
+
+```sh
+openssl rand -hex 16        # 32 hex chars
+openssl rand -base64 24     # 32 base64 chars
+```
+
 The endpoints are intended for **internal networks or loopback**. Expose
 them only where you control who reaches them (reverse proxy + ACL, VPN,
-loopback-only bind).
+loopback-only bind). There is currently **no rate limit** on the
+middleware; rely on network-level access control.
 
 ### `POST /admin/reload`
 
