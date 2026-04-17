@@ -584,6 +584,110 @@ func TestNewClientPair_RejectsMismatchedTransports(t *testing.T) {
 	}
 }
 
+func TestReportUpdate_FallbackOnPrimaryFailure(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.primary.reportErr = errors.New("primary report down")
+	fb := f.withFallback()
+	// Trigger reportUpdate via BootPhase healthy path.
+	_, activeHash, _, _ := f.slots.ActiveSlot()
+	if err := f.updater.writePending(&pendingUpdate{
+		PreviousHash: "prev", NewHash: activeHash,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.checker.failUntil = 0
+
+	if err := f.updater.BootPhase(context.Background()); err != nil {
+		t.Fatalf("BootPhase: %v", err)
+	}
+	_, primaryReports := f.primary.snapshot()
+	_, fbReports := fb.snapshot()
+	if len(primaryReports) != 1 {
+		t.Fatalf("primary should be tried once; got %d", len(primaryReports))
+	}
+	if len(fbReports) != 1 {
+		t.Fatalf("fallback should pick up the report; got %d", len(fbReports))
+	}
+	if !fbReports[0].Success {
+		t.Fatalf("fallback received %+v", fbReports[0])
+	}
+}
+
+func TestReportUpdate_BothTransportsFail_NonFatal(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.primary.reportErr = errors.New("primary down")
+	fb := f.withFallback()
+	fb.reportErr = errors.New("fallback down")
+
+	_, activeHash, _, _ := f.slots.ActiveSlot()
+	if err := f.updater.writePending(&pendingUpdate{
+		PreviousHash: "prev", NewHash: activeHash,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.checker.failUntil = 0
+
+	// BootPhase logs report failures but does not abort the boot — the agent
+	// should still confirm and clear pending so the loop can proceed.
+	if err := f.updater.BootPhase(context.Background()); err != nil {
+		t.Fatalf("BootPhase: %v", err)
+	}
+	if _, err := os.Stat(f.updater.pendingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending should be cleared even with both reports failing")
+	}
+}
+
+func TestReportUpdate_NoFallback_PrimaryFailureSurfacedAsLog(t *testing.T) {
+	// With no fallback configured and primary Report failing, BootPhase still
+	// completes (the report failure is logged but not fatal). We verify that
+	// pending is cleared and watchdog confirmed.
+	f := newUpdaterFixture(t)
+	f.primary.reportErr = errors.New("primary report down")
+	_, activeHash, _, _ := f.slots.ActiveSlot()
+	if err := f.updater.writePending(&pendingUpdate{
+		PreviousHash: "prev", NewHash: activeHash,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.checker.failUntil = 0
+
+	if err := f.updater.BootPhase(context.Background()); err != nil {
+		t.Fatalf("BootPhase: %v", err)
+	}
+	if _, err := os.Stat(f.updater.pendingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending should be cleared even when report fails")
+	}
+}
+
+func TestRunOnce_RestartFailure_RollsBackAndClearsPending(t *testing.T) {
+	f := newUpdaterFixture(t)
+	manifest, deltaBytes := f.signedManifest()
+	f.primary.heartbeatResp = manifest
+	f.transport.body = deltaBytes
+	// Make the restart strategy return an error to simulate exec failing
+	// (e.g. the freshly written binary isn't executable). The Updater must
+	// roll back the swap and remove the pending marker so we don't leave
+	// the device in a half-applied state.
+	f.restart.err = errors.New("exec failed")
+
+	err := f.updater.RunOnce(context.Background())
+	if err == nil {
+		t.Fatalf("expected restart error to surface")
+	}
+	if !strings.Contains(err.Error(), "restart") {
+		t.Fatalf("err = %v, want restart prefix", err)
+	}
+	// Symlink rolled back to A.
+	_, _, name, _ := f.slots.ActiveSlot()
+	if name != SlotNameA {
+		t.Fatalf("after restart failure active = %s, want A (rolled back)", name)
+	}
+	// Pending marker cleared.
+	if _, err := os.Stat(f.updater.pendingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending should be cleared after restart failure; stat = %v", err)
+	}
+}
+
 func TestRun_StopsOnContextCancellation(t *testing.T) {
 	f := newUpdaterFixture(t)
 	f.primary.heartbeatResp = &protocol.ManifestResponse{UpdateAvailable: false}

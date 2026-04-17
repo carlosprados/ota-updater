@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,8 +9,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/fxamacker/cbor/v2"
+	"github.com/plgd-dev/go-coap/v3/message"
+	"github.com/plgd-dev/go-coap/v3/message/codes"
+	"github.com/plgd-dev/go-coap/v3/mux"
+	coapnet "github.com/plgd-dev/go-coap/v3/net"
+	"github.com/plgd-dev/go-coap/v3/options"
+	"github.com/plgd-dev/go-coap/v3/udp"
 
 	"github.com/amplia/ota-updater/internal/protocol"
 )
@@ -199,6 +209,137 @@ func TestCoAPClient_Heartbeat_NilRequest(t *testing.T) {
 	c := NewCoAPClient("coap://x")
 	if _, err := c.Heartbeat(context.Background(), nil); err == nil {
 		t.Fatalf("nil heartbeat should error")
+	}
+}
+
+// coapServerFixture spins up an in-process CoAP UDP server with a tiny mux
+// the test owns. heartbeatHandler and reportHandler may be nil to opt out
+// of registering that resource. Returns the address (e.g. "127.0.0.1:43271")
+// and a cleanup function.
+func coapServerFixture(t *testing.T, heartbeatHandler, reportHandler mux.HandlerFunc) (string, func()) {
+	t.Helper()
+	r := mux.NewRouter()
+	if heartbeatHandler != nil {
+		if err := r.Handle(protocol.PathHeartbeat, heartbeatHandler); err != nil {
+			t.Fatalf("register heartbeat: %v", err)
+		}
+	}
+	if reportHandler != nil {
+		if err := r.Handle(protocol.PathReport, reportHandler); err != nil {
+			t.Fatalf("register report: %v", err)
+		}
+	}
+	l, err := coapnet.NewListenUDP("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	srv := udp.NewServer(options.WithMux(r))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = srv.Serve(l)
+	}()
+	return l.LocalAddr().String(), func() {
+		srv.Stop()
+		_ = l.Close()
+		<-done
+	}
+}
+
+func TestCoAPClient_Report_RoundTrip(t *testing.T) {
+	var seen atomic.Pointer[protocol.UpdateReport]
+	addr, cleanup := coapServerFixture(t,
+		nil,
+		func(w mux.ResponseWriter, r *mux.Message) {
+			body, _ := r.ReadBody()
+			var rep protocol.UpdateReport
+			if err := cbor.Unmarshal(body, &rep); err != nil {
+				_ = w.SetResponse(codes.BadRequest, message.TextPlain, nil)
+				return
+			}
+			seen.Store(&rep)
+			_ = w.SetResponse(codes.Changed, message.TextPlain, nil)
+		},
+	)
+	defer cleanup()
+
+	c := NewCoAPClient("coap://" + addr)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rep := &protocol.UpdateReport{
+		DeviceID: "dev-1", PreviousHash: "p", NewHash: "n",
+		Success: true, Timestamp: 12345,
+	}
+	if err := c.Report(ctx, rep); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	got := seen.Load()
+	if got == nil {
+		t.Fatalf("server received no report")
+	}
+	if got.DeviceID != "dev-1" || !got.Success || got.NewHash != "n" {
+		t.Fatalf("server received %+v", got)
+	}
+}
+
+func TestCoAPClient_Heartbeat_RoundTrip(t *testing.T) {
+	want := protocol.ManifestResponse{
+		UpdateAvailable: true,
+		TargetHash:      strings.Repeat("a", 64),
+		DeltaHash:       strings.Repeat("b", 64),
+		Signature:       strings.Repeat("c", 128),
+		DeltaEndpoint:   "/delta/from/to",
+	}
+	addr, cleanup := coapServerFixture(t,
+		func(w mux.ResponseWriter, r *mux.Message) {
+			buf, _ := cbor.Marshal(want)
+			_ = w.SetResponse(codes.Content, message.AppCBOR, bytes.NewReader(buf))
+		},
+		nil,
+	)
+	defer cleanup()
+
+	c := NewCoAPClient("coap://" + addr)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	got, err := c.Heartbeat(ctx, &protocol.Heartbeat{DeviceID: "dev-X"})
+	if err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+	if got.TargetHash != want.TargetHash || got.Signature != want.Signature {
+		t.Fatalf("response mismatch: %+v vs %+v", got, want)
+	}
+}
+
+func TestCoAPClient_Report_NilRequest(t *testing.T) {
+	c := NewCoAPClient("coap://x")
+	if err := c.Report(context.Background(), nil); err == nil {
+		t.Fatalf("nil report should error")
+	}
+}
+
+func TestCoAPClient_Report_RejectsNonCoAPBaseURL(t *testing.T) {
+	c := NewCoAPClient("http://x")
+	err := c.Report(context.Background(), &protocol.UpdateReport{DeviceID: "x"})
+	if err == nil {
+		t.Fatalf("non-coap base URL should error")
+	}
+	if !strings.Contains(err.Error(), "coap://") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestMismatchedPairError_Message(t *testing.T) {
+	_, err := NewClientPair(&fakeClient{name: "http"}, &fakeTransport{name: "coap"})
+	if err == nil {
+		t.Fatalf("expected mismatch error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "http") || !strings.Contains(msg, "coap") {
+		t.Fatalf("error message %q should mention both transports", msg)
 	}
 }
 
