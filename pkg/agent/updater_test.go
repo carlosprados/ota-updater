@@ -179,6 +179,11 @@ func newUpdaterFixture(t *testing.T) *updaterFixture {
 			CheckInterval: 50 * time.Millisecond,
 			MaxRetries:    1,
 			RetryBackoff:  10 * time.Millisecond,
+			// Default fixture mirrors YAML defaults: auto-update on, max bump
+			// "major", empty Version → semver gate disabled. Tests that
+			// exercise the gate itself override these fields after NewUpdater.
+			AutoUpdate: true,
+			MaxBump:    MaxBumpMajor,
 		},
 		Primary:   pair,
 		Slots:     slots,
@@ -707,5 +712,177 @@ func TestRun_StopsOnContextCancellation(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after cancel")
+	}
+}
+
+// --- Update-policy gate tests ---
+
+func TestRunOnce_AutoUpdateFalse_BlocksDownload(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.AutoUpdate = false
+	f.updater.cfg.Version = "1.0.0"
+
+	manifest, _ := f.signedManifest()
+	manifest.TargetVersion = "1.1.0"
+	f.primary.heartbeatResp = manifest
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if f.transport.calls != 0 {
+		t.Fatalf("auto_update=false should block download; transport.calls=%d", f.transport.calls)
+	}
+	if f.restart.calls != 0 {
+		t.Fatalf("auto_update=false should block restart; restart.calls=%d", f.restart.calls)
+	}
+}
+
+func TestRunOnce_MaxBumpExceeded_BlocksDownload(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.Version = "1.0.0"
+	f.updater.cfg.MaxBump = MaxBumpPatch // only accept patch bumps
+
+	manifest, _ := f.signedManifest()
+	manifest.TargetVersion = "2.0.0" // major bump → exceeds
+	f.primary.heartbeatResp = manifest
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if f.transport.calls != 0 {
+		t.Fatalf("major bump with max_bump=patch should block; transport.calls=%d", f.transport.calls)
+	}
+}
+
+func TestRunOnce_MaxBumpWithinCap_AllowsDownload(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.Version = "1.0.0"
+	f.updater.cfg.MaxBump = MaxBumpMinor
+
+	manifest, deltaBytes := f.signedManifest()
+	manifest.TargetVersion = "1.1.0" // minor bump → allowed under MaxBumpMinor
+	f.primary.heartbeatResp = manifest
+	f.transport.body = deltaBytes
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if f.restart.calls != 1 {
+		t.Fatalf("allowed bump should reach restart; restart.calls=%d", f.restart.calls)
+	}
+}
+
+func TestRunOnce_UnknownVersionDeny_Blocks(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.Version = "1.0.0"
+	f.updater.cfg.UnknownVersionPolicy = UnknownDeny
+
+	manifest, _ := f.signedManifest()
+	manifest.TargetVersion = "not-semver"
+	f.primary.heartbeatResp = manifest
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if f.transport.calls != 0 {
+		t.Fatalf("unknown version with deny policy should block; transport.calls=%d", f.transport.calls)
+	}
+}
+
+func TestRunOnce_UnknownVersionAllow_Proceeds(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.Version = "1.0.0"
+	f.updater.cfg.UnknownVersionPolicy = UnknownAllow
+
+	manifest, deltaBytes := f.signedManifest()
+	manifest.TargetVersion = "not-semver"
+	f.primary.heartbeatResp = manifest
+	f.transport.body = deltaBytes
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if f.restart.calls != 1 {
+		t.Fatalf("unknown version with allow policy should proceed; restart.calls=%d", f.restart.calls)
+	}
+}
+
+func TestRunOnce_EmptyLocalVersion_DisablesGate(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.Version = ""       // unversioned agent
+	f.updater.cfg.MaxBump = MaxBumpNone // even the strictest cap
+
+	manifest, deltaBytes := f.signedManifest()
+	manifest.TargetVersion = "1.2.3"
+	f.primary.heartbeatResp = manifest
+	f.transport.body = deltaBytes
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if f.restart.calls != 1 {
+		t.Fatalf("empty local version should bypass gate; restart.calls=%d", f.restart.calls)
+	}
+}
+
+func TestRunOnce_TriggerUpdate_BypassesAutoUpdateFalse(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.AutoUpdate = false
+	f.updater.cfg.Version = "1.0.0"
+
+	manifest, deltaBytes := f.signedManifest()
+	manifest.TargetVersion = "2.0.0"
+	f.primary.heartbeatResp = manifest
+	f.transport.body = deltaBytes
+
+	f.updater.TriggerUpdate()
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if f.restart.calls != 1 {
+		t.Fatalf("TriggerUpdate should force the cycle; restart.calls=%d", f.restart.calls)
+	}
+	// Second cycle (without trigger) should be blocked again.
+	f.restart.calls = 0
+	// Reset pending so fixture is reusable.
+	_ = os.Remove(f.updater.pendingPath)
+	// Set up slot A again as "running": restore symlink to A.
+	_ = os.Remove(filepath.Join(f.stateDir, "current"))
+	_ = os.Symlink(filepath.Join(f.slotsDir, SlotNameA), filepath.Join(f.stateDir, "current"))
+	// Recreate slot A since WriteToInactive clobbered B; A should still have oldBin.
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce 2: %v", err)
+	}
+	if f.restart.calls != 0 {
+		t.Fatalf("second cycle without trigger should be blocked; restart.calls=%d", f.restart.calls)
+	}
+}
+
+func TestRunOnce_UpdateNowSidecar_BypassesAutoUpdateFalse(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.AutoUpdate = false
+	f.updater.cfg.Version = "1.0.0"
+
+	manifest, deltaBytes := f.signedManifest()
+	manifest.TargetVersion = "2.0.0"
+	f.primary.heartbeatResp = manifest
+	f.transport.body = deltaBytes
+
+	// Create the sidecar file.
+	sidecarPath := filepath.Join(f.stateDir, UpdateNowFile)
+	if err := os.WriteFile(sidecarPath, []byte("go"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if f.restart.calls != 1 {
+		t.Fatalf("sidecar should force the cycle; restart.calls=%d", f.restart.calls)
+	}
+	// Sidecar must be consumed (removed).
+	if _, err := os.Stat(sidecarPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sidecar should have been removed; stat err = %v", err)
 	}
 }

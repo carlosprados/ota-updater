@@ -64,13 +64,29 @@ type DeviceConfig struct {
 	ActiveSymlink string `yaml:"active_symlink"`
 }
 
-// UpdateConfig controls the update loop cadence and download behavior.
+// UpdateConfig controls the update loop cadence, download behavior and the
+// semver-based auto-update policy.
 type UpdateConfig struct {
 	CheckInterval   time.Duration `yaml:"check_interval"`
 	ChunkSize       int           `yaml:"chunk_size"`
 	MaxRetries      int           `yaml:"max_retries"`
 	RetryBackoff    time.Duration `yaml:"retry_backoff"`
 	WatchdogTimeout time.Duration `yaml:"watchdog_timeout"`
+
+	// AutoUpdate is the master switch. When *false*, the agent detects that
+	// an update is available and logs it but does NOT apply it
+	// automatically. Manual triggers (Updater.TriggerUpdate or the
+	// .update_now sidecar file) bypass this flag for a single cycle.
+	// A pointer is used so ApplyDefaults can distinguish "key omitted in
+	// YAML" (→ default true) from "explicitly set to false".
+	AutoUpdate *bool `yaml:"auto_update"`
+	// MaxBump caps the semver transition accepted automatically when
+	// AutoUpdate is true: "none" | "patch" | "minor" | "major". Updates
+	// above this cap are logged but not applied.
+	MaxBump string `yaml:"max_bump"`
+	// UnknownVersionPolicy decides what to do when ManifestResponse.TargetVersion
+	// is not valid semver: "deny" (default, refuse) or "allow" (apply anyway).
+	UnknownVersionPolicy string `yaml:"unknown_version_policy"`
 }
 
 // CryptoConfig locates the Ed25519 public key used to verify manifests.
@@ -136,6 +152,16 @@ func (c *Config) ApplyDefaults() {
 	if c.Update.WatchdogTimeout == 0 {
 		c.Update.WatchdogTimeout = 60 * time.Second
 	}
+	if c.Update.AutoUpdate == nil {
+		t := true
+		c.Update.AutoUpdate = &t
+	}
+	if c.Update.MaxBump == "" {
+		c.Update.MaxBump = "major"
+	}
+	if c.Update.UnknownVersionPolicy == "" {
+		c.Update.UnknownVersionPolicy = "deny"
+	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
 	}
@@ -190,6 +216,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Update.ChunkSize <= 0 {
 		return errors.New("update.chunk_size must be positive")
+	}
+	if _, ok := ParseMaxBump(c.Update.MaxBump); !ok {
+		return fmt.Errorf("update.max_bump: unknown %q (use none|patch|minor|major)", c.Update.MaxBump)
+	}
+	if _, ok := ParseUnknownVersionPolicy(c.Update.UnknownVersionPolicy); !ok {
+		return fmt.Errorf("update.unknown_version_policy: unknown %q (use deny|allow)", c.Update.UnknownVersionPolicy)
 	}
 	if !isKnownLogLevel(c.Logging.Level) {
 		return fmt.Errorf("logging.level: unknown %q (use debug|info|warn|error)", c.Logging.Level)

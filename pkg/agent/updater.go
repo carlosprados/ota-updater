@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/amplia/ota-updater/pkg/crypto"
@@ -33,6 +34,13 @@ const stagingDeltaFile = ".staging.delta"
 // downloadStateFile is where the Downloader persists its resume state.
 const downloadStateFile = ".download.json"
 
+// UpdateNowFile is the basename of the sidecar the operator creates inside
+// StateDir to force a single update cycle, ignoring AutoUpdate and the
+// MaxBump policy. Consumed (deleted) on the first cycle that sees it,
+// whether or not that cycle actually applies an update. Exported so ops
+// tooling can reference the name from outside the package.
+const UpdateNowFile = ".update_now"
+
 // HWInfoFunc lets library consumers plug in real hardware probes
 // (memory, disk free, etc.). The default reports GOARCH/GOOS only.
 type HWInfoFunc func() protocol.HWInfo
@@ -42,6 +50,13 @@ type HWInfoFunc func() protocol.HWInfo
 type UpdaterConfig struct {
 	// DeviceID identifies this device in heartbeats and update reports.
 	DeviceID string
+	// Version is the human-readable semver of the currently running binary.
+	// Injected by the caller (typically via `-ldflags "-X main.version=..."`
+	// in cmd/edge-agent; library embedders do the same from their own main).
+	// Used both as Heartbeat.Version (advisory, for server logging) and as
+	// the local side of the policy comparison against ManifestResponse.TargetVersion.
+	// An empty string disables the policy gate (all updates allowed).
+	Version string
 	// CheckInterval is the cadence between RunOnce iterations in Run.
 	// Defaults to 1 hour.
 	CheckInterval time.Duration
@@ -49,12 +64,23 @@ type UpdaterConfig struct {
 	MaxRetries   int
 	RetryBackoff time.Duration
 	// StateDir holds the Updater's persistent files: .pending_update,
-	// .staging.delta, .download.json. Recommended: same dir as the slots,
-	// so the BootCounter (.boot_count) sits next to them.
+	// .staging.delta, .download.json, .update_now (manual trigger sidecar).
+	// Recommended: same dir as the slots, so the BootCounter (.boot_count)
+	// sits next to them.
 	StateDir string
 	// SelfArgv is the argv the new binary is exec'd with after a swap.
 	// Defaults to os.Args (the agent's current invocation).
 	SelfArgv []string
+
+	// AutoUpdate is the master auto-update switch. When false, an update
+	// seen on the heartbeat is logged but not applied unless a manual
+	// trigger (TriggerUpdate / .update_now sidecar) is present.
+	AutoUpdate bool
+	// MaxBump is the policy cap (resolved from UpdateConfig.MaxBump).
+	MaxBump MaxBump
+	// UnknownVersionPolicy decides what to do when TargetVersion isn't valid
+	// semver (resolved from UpdateConfig.UnknownVersionPolicy).
+	UnknownVersionPolicy UnknownVersionPolicy
 }
 
 // UpdaterDeps groups the collaborators the Updater needs. Construct each
@@ -93,6 +119,13 @@ type Updater struct {
 	pendingPath   string
 	deltaStaging  string
 	downloadState string
+	updateNowPath string
+
+	// forceOnce, when true, makes the next RunOnce skip the AutoUpdate /
+	// MaxBump policy gate. Set by TriggerUpdate or by detecting the
+	// .update_now sidecar file; reset after the cycle consumes it.
+	forceMu   sync.Mutex
+	forceOnce bool
 
 	now func() time.Time
 }
@@ -160,6 +193,7 @@ func NewUpdater(deps UpdaterDeps) (*Updater, error) {
 		pendingPath:   filepath.Join(cfg.StateDir, pendingUpdateFile),
 		deltaStaging:  filepath.Join(cfg.StateDir, stagingDeltaFile),
 		downloadState: filepath.Join(cfg.StateDir, downloadStateFile),
+		updateNowPath: filepath.Join(cfg.StateDir, UpdateNowFile),
 		now:           time.Now,
 	}, nil
 }
@@ -315,6 +349,7 @@ func (u *Updater) RunOnce(ctx context.Context) error {
 	hb := &protocol.Heartbeat{
 		DeviceID:    u.cfg.DeviceID,
 		VersionHash: activeHash,
+		Version:     u.cfg.Version,
 		HWInfo:      u.hwInfo(),
 		Timestamp:   u.now().Unix(),
 	}
@@ -337,6 +372,15 @@ func (u *Updater) RunOnce(ctx context.Context) error {
 	}
 	if resp.Signature == "" || resp.TargetHash == "" || resp.DeltaHash == "" {
 		return errors.New("manifest missing signature, target_hash or delta_hash")
+	}
+
+	// Policy gate: when AutoUpdate is off or the bump exceeds MaxBump, we
+	// log the availability but do not apply — unless the operator set the
+	// .update_now sidecar or called TriggerUpdate, in which case we consume
+	// the one-shot override and proceed.
+	forced := u.consumeForceOnce()
+	if !forced && !u.policyAllows(resp.TargetVersion) {
+		return nil
 	}
 
 	// Verify signature BEFORE downloading (docs/signing.md §5 step 2).
@@ -442,6 +486,102 @@ func (u *Updater) RunOnce(ctx context.Context) error {
 		return fmt.Errorf("restart: %w", err)
 	}
 	return nil // unreachable on successful exec
+}
+
+// TriggerUpdate marks the next RunOnce cycle as "forced": the AutoUpdate
+// switch and the MaxBump policy are bypassed for that single cycle. Safe to
+// call concurrently with Run; the flag is consumed the first time RunOnce
+// observes it and immediately reset.
+//
+// Typical use: library embedders that orchestrate their own update policy
+// (e.g. "auto-update off by default, but when my control plane says so,
+// force it now") call this instead of relying on config flags.
+func (u *Updater) TriggerUpdate() {
+	u.forceMu.Lock()
+	u.forceOnce = true
+	u.forceMu.Unlock()
+}
+
+// consumeForceOnce atomically reads and clears the force flag. It also
+// observes the .update_now sidecar file in StateDir: if present, it is
+// consumed (removed) and the cycle is forced. Sidecar and programmatic
+// trigger are equivalent — either one is enough to override policy.
+func (u *Updater) consumeForceOnce() bool {
+	u.forceMu.Lock()
+	fromCall := u.forceOnce
+	u.forceOnce = false
+	u.forceMu.Unlock()
+
+	fromFile := false
+	if _, err := os.Stat(u.updateNowPath); err == nil {
+		fromFile = true
+		if rerr := os.Remove(u.updateNowPath); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			u.logger.Warn("remove update-now sidecar",
+				"op", "update_cycle", "path", u.updateNowPath, "err", rerr,
+			)
+		}
+	}
+	if fromCall || fromFile {
+		u.logger.Info("manual update trigger consumed",
+			"op", "update_cycle", "device_id", u.cfg.DeviceID,
+			"from_call", fromCall, "from_sidecar", fromFile,
+		)
+		return true
+	}
+	return false
+}
+
+// policyAllows returns true when this cycle may apply the update with the
+// given remote TargetVersion. Logs the decision on block so operators see
+// exactly why an otherwise-actionable update was skipped.
+func (u *Updater) policyAllows(remoteVersion string) bool {
+	if !u.cfg.AutoUpdate {
+		u.logger.Info("update available but auto_update is disabled",
+			"op", "update_cycle", "device_id", u.cfg.DeviceID,
+			"local_version", u.cfg.Version, "remote_version", remoteVersion,
+		)
+		return false
+	}
+	// Empty local version disables the semver gate — the binary doesn't
+	// know its own version so policy cannot meaningfully compare. We allow
+	// the update so an unversioned agent still receives them; operators who
+	// want strict gating inject a version via ldflags.
+	if u.cfg.Version == "" {
+		return true
+	}
+	bump := ComputeBump(u.cfg.Version, remoteVersion)
+	if bump == BumpUnknown {
+		if u.cfg.UnknownVersionPolicy == UnknownAllow {
+			u.logger.Warn("remote TargetVersion not semver; applying per unknown_version_policy=allow",
+				"op", "update_cycle", "device_id", u.cfg.DeviceID,
+				"local_version", u.cfg.Version, "remote_version", remoteVersion,
+			)
+			return true
+		}
+		u.logger.Warn("remote TargetVersion not semver; blocked per unknown_version_policy=deny",
+			"op", "update_cycle", "device_id", u.cfg.DeviceID,
+			"local_version", u.cfg.Version, "remote_version", remoteVersion,
+		)
+		return false
+	}
+	if bump == BumpNone {
+		// Server said UpdateAvailable=true but local is >= remote — a
+		// server-config mismatch; refuse to apply.
+		u.logger.Warn("manifest update_available=true but local version not older; skipping",
+			"op", "update_cycle", "device_id", u.cfg.DeviceID,
+			"local_version", u.cfg.Version, "remote_version", remoteVersion,
+		)
+		return false
+	}
+	if !AllowedByPolicy(bump, u.cfg.MaxBump) {
+		u.logger.Info("update available but bump exceeds max_bump policy",
+			"op", "update_cycle", "device_id", u.cfg.DeviceID,
+			"local_version", u.cfg.Version, "remote_version", remoteVersion,
+			"bump", int(bump), "max_bump", u.cfg.MaxBump.String(),
+		)
+		return false
+	}
+	return true
 }
 
 // heartbeatWithFallback runs the primary client; if it errors and a fallback
