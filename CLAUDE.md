@@ -6,10 +6,10 @@ Complementa a `~/.claude/CLAUDE.md` (no duplica git/idioma/estilo). Aplica a est
 
 - Rama activa: `ota/bootstrap-protocol-crypto`. Working tree limpio en el último commit.
 - Último commit: `9bcd798 feat(agent): step 12 -- downloader with HTTP Range resume and CoAP fallback`.
-- **Pasos 1–12 completados.** Pasos **13–18 pendientes** (watchdog → updater → cmd/edge-agent → tests → integration → pkg-move+README).
-- Antes del paso 13 hay **dos decisiones abiertas** que necesitan respuesta de Charlie:
-  1. Watchdog: número de reintentos N de heartbeat dentro de la ventana antes de considerar fallo (recomendación: 3).
-  2. Paso 14: estrategia de self-restart tras swap (recomendación: `syscall.Exec` por defecto con interfaz `RestartStrategy` pluggable).
+- **Pasos 1–13 completados.** Pasos **14–18 pendientes** (updater → cmd/edge-agent → tests → integration → pkg-move+README).
+- Decisiones cerradas el 2026-04-17 (antes de arrancar el paso 13):
+  1. **Watchdog N=3.** Tres reintentos de heartbeat dentro de `Update.WatchdogTimeout` antes de declarar el binario recién activado como malo. Evita rollbacks espurios por transitorios de red NB-IoT.
+  2. **Self-restart: `syscall.Exec` como default + interfaz `RestartStrategy` pluggable**, con `ExitRestart` como segunda implementación lista para quien prefiera un ciclo limpio bajo supervisor. Compatibilidad con systemd y Docker documentada en `README.md` (sección "Self-restart after swap").
 - Para reanudar: `task ci` debe estar verde; leer memoria `project_resumption_2026-04-17.md` (índice resumen, decisiones y políticas críticas).
 
 ## Qué es
@@ -58,6 +58,8 @@ Decididas 2026-04-16:
 
 - **Firma Ed25519 sobre `targetHash || deltaHash`** (opción B, decidida 2026-04-16). El payload canónico lo construye `protocol.ManifestSigningPayload`. Permite al agente abortar una descarga corrupta antes de parchear (ahorra downlink NB-IoT), sin renunciar a la autenticidad del binario activado. Coste: firma por-par `(from,to)`, marginal con Ed25519. **Documentación autoritativa en [`docs/signing.md`](docs/signing.md)** — cualquier cambio que toque firmas debe actualizar ese fichero en el mismo commit.
 - **Logging con `log/slog` (stdlib)**, nivel configurable y **cambiable en runtime** (decidido 2026-04-16). Config: `logging.level` (`debug|info|warn|error`) y `logging.format` (`text|json`). En runtime: `POST /admin/loglevel` con el mismo bearer token que `/admin/reload`. Niveles: DEBUG detalles internos, INFO operaciones normales, WARN anomalías recuperables, ERROR fallos. Campos obligatorios: `device_id`, `from`, `to`, `remote`, `op` en servidor; `device_id`, `version_hash`, `operation` en agente.
+- **Self-restart del agente tras swap** (decidido 2026-04-17): `syscall.Exec` por defecto, detrás de una interfaz `RestartStrategy` pluggable. Se envía una segunda implementación lista `ExitRestart` para quien prefiera `os.Exit(0)` + relanzamiento del supervisor. Justificación: `syscall.Exec` mantiene PID, cgroup, env vars y FDs, es transparente para systemd (cualquier `Type=`, incluido `notify` reenviando `sd_notify(READY=1)` tras exec) y para Docker (PID 1 no cambia). Requisitos operativos: en Docker los slots A/B deben vivir en un volumen persistente; `ExecStart=` de systemd debe apuntar al symlink `current/edge-agent` (estable). Detalle completo en `README.md` §"Self-restart after swap".
+- **Watchdog N=3** (decidido 2026-04-17): tres intentos de heartbeat dentro de `Update.WatchdogTimeout` antes de declarar fallo. Evita rollbacks espurios por transitorios NB-IoT. `HealthChecker` es una interfaz pluggable; default = heartbeat OK. Boot-count persistente en `<slotsDir>/.boot_count`; >2 arranques del mismo `version_hash` ⇒ versión marcada como mala, rollback permanente, reporte al server.
 - **Claves**: PKCS#8 PEM para privada (`server.key`, 0600), PKIX PEM para pública (`agent.pub`, 0644). Generadas con `go run ./tools/keygen -out <dir>`.
 - **`keygen` se niega a sobrescribir** ficheros existentes (O_EXCL). Destruir claves es manual y explícito.
 - **Tags duales JSON + CBOR** en `internal/protocol/messages.go` con claves CBOR enteras (compactas). Un único tipo por mensaje para HTTP y CoAP.
@@ -68,8 +70,8 @@ Decididas 2026-04-16:
 Pendientes de confirmación o decisión de diseño antes de llegar al paso correspondiente:
 
 1. **RAM de `bsdiff` en server** — cachear agresivo, considerar precómputo en arranque.
-2. **Self-restart del agente tras swap** — `syscall.Exec` puro vs. dependencia de systemd. Decidir antes del paso 14 (`updater.go`).
-3. **Watchdog**: criterio "alcanza server" es frágil en NB-IoT. Exigir N reintentos durante la ventana, no fallo instantáneo. Decidir antes del paso 13.
+2. ~~**Self-restart del agente tras swap**~~ — resuelto 2026-04-17: `syscall.Exec` default + `RestartStrategy` pluggable (`ExitRestart` como alternativa). Compatibilidad systemd/Docker documentada en README.
+3. ~~**Watchdog N reintentos dentro de la ventana**~~ — resuelto 2026-04-17: **N=3** configurable. `HealthChecker` pluggable. Boot-count `<slotsDir>/.boot_count`; >2 ⇒ versión mala + rollback permanente.
 4. ~~**Protección de delta corrupto**~~ — resuelto 2026-04-16: opción B implementada (firma sobre `targetHash || deltaHash`). Ver `internal/protocol/signing.go`.
 5. **Clock skew** en `Timestamp` de heartbeat/report: definir política de validación server-side.
 6. **go-bsdiff**: poco activo. Validar temprano con binarios reales; considerar alternativa `icedream/go-bsdiff`.
@@ -112,7 +114,7 @@ task clean              # rm bin/ y store/deltas/
 - [x] Paso 10 — `internal/agent/config.go` + `configs/agent.yaml` (tipos exportados para uso librería; `Transport` type-safe; `ApplyDefaults`/`Validate` públicos; tests incluyen flujo library-no-YAML)
 - [x] Paso 11 — `internal/agent/slots.go` (SlotManager A/B con Active/Inactive/WriteToInactive/Swap/Rollback; symlink swap atómico via tmp+rename; tests cubren active/inactive, atomicity, swap/rollback, inactive intact, validaciones)
 - [x] Paso 12 — `internal/agent/downloader.go` (`DeltaTransport` interface + `HTTPTransport` con Range + `CoAPTransport` sin resume; Downloader con state JSON, exp backoff+jitter, verify SHA-256 final, fallback a offset=0 cuando transport rechaza resume)
-- [ ] Paso 13 — `internal/agent/watchdog.go`
+- [x] Paso 13 — `internal/agent/watchdog.go` + `restart.go` (HealthChecker pluggable con DefaultHealthChecker basado en HeartbeatFunc; BootCounter con persistencia atómica en `<slotsDir>/.boot_count`, JSON, idempotente; Watchdog con `WaitForHealth` N=3 reintentos en ventana, `CheckBoot` que devuelve `ErrBootCountExceeded` cuando count>MaxBoots=2, `Confirm` que limpia el contador; `RestartStrategy` interface + `ExecRestart` (default, `syscall.Exec`, env preservado) + `ExitRestart` (alternativa con código configurable). Tests: persistencia entre instancias, escalada del contador, ventana con N intentos, helper de subproceso para validar `syscall.Exec` real)
 - [ ] Paso 14 — `internal/agent/updater.go`
 - [ ] Paso 15 — `cmd/edge-agent/main.go`
 - [ ] Paso 16 — tests unitarios
