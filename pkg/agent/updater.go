@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/amplia/ota-updater/pkg/atomicio"
 	"github.com/amplia/ota-updater/pkg/crypto"
 	"github.com/amplia/ota-updater/pkg/delta"
 	"github.com/amplia/ota-updater/pkg/protocol"
@@ -664,7 +664,7 @@ func (u *Updater) writePending(p *pendingUpdate) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(u.pendingPath, data, 0o644)
+	return atomicio.WriteFile(u.pendingPath, data, 0o644, u.logger)
 }
 
 func (u *Updater) clearPending() {
@@ -678,41 +678,6 @@ func (u *Updater) clearPending() {
 func sha256HexBytes(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
-}
-
-// writeFileAtomic writes data to path via a temp file in the same directory
-// then renames. Mirrors the slot writer but accepts a non-exec mode.
-func writeFileAtomic(path string, data []byte, mode fs.FileMode) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Chmod(mode); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
 }
 
 // defaultHWInfo returns just GOARCH/GOOS. Library consumers that want to

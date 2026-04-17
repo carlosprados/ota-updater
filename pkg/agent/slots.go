@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/amplia/ota-updater/pkg/atomicio"
 )
 
 // Canonical slot names. An A/B layout is fixed to keep the on-disk contract
@@ -99,7 +101,7 @@ func (s *SlotManager) WriteToInactive(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	if err := writeAtomicFromReader(dst, r); err != nil {
+	if err := atomicio.WriteReader(dst, r, 0o755, s.logger); err != nil {
 		return fmt.Errorf("write inactive slot %s: %w", name, err)
 	}
 	s.logger.Info("inactive slot written",
@@ -116,7 +118,7 @@ func (s *SlotManager) Swap() error {
 	if err != nil {
 		return err
 	}
-	if err := atomicSymlink(inactivePath, s.activeSymlink); err != nil {
+	if err := atomicio.ReplaceSymlink(inactivePath, s.activeSymlink, s.logger); err != nil {
 		return fmt.Errorf("swap symlink: %w", err)
 	}
 	s.logger.Info("active slot swapped",
@@ -133,7 +135,7 @@ func (s *SlotManager) Rollback() error {
 	if err != nil {
 		return err
 	}
-	if err := atomicSymlink(inactivePath, s.activeSymlink); err != nil {
+	if err := atomicio.ReplaceSymlink(inactivePath, s.activeSymlink, s.logger); err != nil {
 		return fmt.Errorf("rollback symlink: %w", err)
 	}
 	s.logger.Warn("active slot rolled back",
@@ -161,52 +163,6 @@ func (s *SlotManager) resolveActive() (path, name string, err error) {
 	return dst, base, nil
 }
 
-// atomicSymlink creates (link + ".tmp") → target and renames it over link.
-// Using rename guarantees readers always see either the old or the new link,
-// never a missing one.
-func atomicSymlink(target, link string) error {
-	tmp := link + ".tmp"
-	_ = os.Remove(tmp) // best-effort: leftover from a prior crashed swap
-	if err := os.Symlink(target, tmp); err != nil {
-		return fmt.Errorf("create temp symlink: %w", err)
-	}
-	if err := os.Rename(tmp, link); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename symlink: %w", err)
-	}
-	return nil
-}
-
-// writeAtomicFromReader streams r into path via a temp file in the same
-// directory, then renames on success. Mirrors server.writeAtomic for bytes
-// but without requiring the content in memory up front.
-func writeAtomicFromReader(path string, r io.Reader) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".slot-*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Chmod(0o755); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
-}
 
 // hashFile returns the SHA-256 hex of the entire file at path.
 func hashFile(path string) (string, error) {

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/amplia/ota-updater/pkg/atomicio"
 )
 
 // Default tuning for the post-swap health verification window. These match
@@ -165,29 +167,8 @@ func (b *BootCounter) writeLocked(st bootCountState) error {
 	if err != nil {
 		return fmt.Errorf("marshal boot counter: %w", err)
 	}
-	dir := filepath.Dir(b.path)
-	f, err := os.CreateTemp(dir, ".boot_count-*")
-	if err != nil {
-		return fmt.Errorf("create temp boot counter: %w", err)
-	}
-	tmp := f.Name()
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmp)
+	if err := atomicio.WriteFile(b.path, data, 0o644, nil); err != nil {
 		return fmt.Errorf("write boot counter: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return fmt.Errorf("fsync boot counter: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("close boot counter: %w", err)
-	}
-	if err := os.Rename(tmp, b.path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("rename boot counter: %w", err)
 	}
 	return nil
 }

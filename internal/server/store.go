@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/amplia/ota-updater/pkg/atomicio"
 	"github.com/amplia/ota-updater/pkg/delta"
 )
 
@@ -136,7 +137,7 @@ func Open(ctx context.Context, opts StoreOptions, logger *slog.Logger) (*Store, 
 
 	targetStorePath := s.binaryPath(hash)
 	if _, err := os.Stat(targetStorePath); errors.Is(err, os.ErrNotExist) {
-		if err := writeAtomic(targetStorePath, data, 0o644); err != nil {
+		if err := atomicio.WriteFile(targetStorePath, data, 0o644, s.logger); err != nil {
 			return nil, fmt.Errorf("persist target binary: %w", err)
 		}
 	} else if err != nil {
@@ -240,7 +241,7 @@ func (s *Store) Reload(ctx context.Context) error {
 
 	targetStorePath := s.binaryPath(hash)
 	if !fileExists(targetStorePath) {
-		if werr := writeAtomic(targetStorePath, data, 0o644); werr != nil {
+		if werr := atomicio.WriteFile(targetStorePath, data, 0o644, s.logger); werr != nil {
 			s.logger.Warn("persist reloaded target failed",
 				"op", "store_reload", "target_hash", hash, "err", werr,
 			)
@@ -331,7 +332,7 @@ func (s *Store) generateAndCache(fromHash, targetHash string, targetBin []byte) 
 	if err != nil {
 		return "", fmt.Errorf("generate delta: %w", err)
 	}
-	if err := writeAtomic(out, patch, 0o644); err != nil {
+	if err := atomicio.WriteFile(out, patch, 0o644, s.logger); err != nil {
 		return "", fmt.Errorf("write delta: %w", err)
 	}
 	s.hotDeltas.Put(fromHash+"_"+targetHash, patch)
@@ -413,7 +414,7 @@ func (s *Store) RegisterBinary(data []byte) (string, error) {
 	if _, err := os.Stat(path); err == nil {
 		return hash, nil
 	}
-	if err := writeAtomic(path, data, 0o644); err != nil {
+	if err := atomicio.WriteFile(path, data, 0o644, s.logger); err != nil {
 		return "", fmt.Errorf("write binary %s: %w", hash, err)
 	}
 	return hash, nil
@@ -438,32 +439,3 @@ func (s *Store) loadBinary(hash string) ([]byte, error) {
 	return data, nil
 }
 
-// writeAtomic writes data to path via a temp file in the same directory
-// followed by rename, so readers never observe a partial file.
-func writeAtomic(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Chmod(mode); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
-}
