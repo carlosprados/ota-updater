@@ -111,7 +111,7 @@ func TestAdmin_Reload_InvalidatesCache(t *testing.T) {
 
 	// rewrite the target binary with different content so the hash changes
 	newContent := append([]byte("new-"), make([]byte, 32<<10)...)
-	if err := os.WriteFile(store.targetPath, newContent, 0o644); err != nil {
+	if err := os.WriteFile(store.opts.TargetPath, newContent, 0o644); err != nil {
 		t.Fatalf("write new target: %v", err)
 	}
 

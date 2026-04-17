@@ -74,7 +74,7 @@ Decididas 2026-04-16:
 
 Pendientes de confirmación o decisión de diseño antes de llegar al paso correspondiente:
 
-1. **RAM de `bsdiff` en server** — cachear agresivo, considerar precómputo en arranque.
+1. ~~**RAM de `bsdiff` en server**~~ — resuelto 2026-04-17 (PR-A). Ya NO se cachean binarios source en RAM (kernel page cache asume el rol). Target activo en RAM sólo bajo `store.target_max_memory_mb` (default 200 MiB); por encima, read-on-demand. Hot LRU de deltas en RAM con `store.hot_delta_cache_mb` (default 512 MiB) que absorbe campañas (miles de devices pidiendo el mismo delta → 1 disco read via singleflight). Manifest LRU con `manifest.cache_size` (default 4096). Límite duro identificado: bsdiff es ~20× el binario en pico; targets >100 MiB no son prácticos y librsync se descartó como sustituto tras benchmark (deltas ~100× más grandes sobre binarios Go reales). Ver `README.md` §"Memory bounds" y `benchmark/`.
 2. ~~**Self-restart del agente tras swap**~~ — resuelto 2026-04-17: `syscall.Exec` default + `RestartStrategy` pluggable (`ExitRestart` como alternativa). Compatibilidad systemd/Docker documentada en README.
 3. ~~**Watchdog N reintentos dentro de la ventana**~~ — resuelto 2026-04-17: **N=3** configurable. `HealthChecker` pluggable. Boot-count `<slotsDir>/.boot_count`; >2 ⇒ versión mala + rollback permanente.
 4. ~~**Protección de delta corrupto**~~ — resuelto 2026-04-16: opción B implementada (firma sobre `targetHash || deltaHash`). Ver `pkg/protocol/signing.go`.

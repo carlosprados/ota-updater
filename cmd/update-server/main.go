@@ -55,7 +55,14 @@ func run(cfgPath string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	store, err := server.Open(ctx, cfg.Store.BinariesDir, cfg.Store.DeltasDir, cfg.Target.Binary, logger)
+	store, err := server.Open(ctx, server.StoreOptions{
+		BinariesDir:          cfg.Store.BinariesDir,
+		DeltasDir:            cfg.Store.DeltasDir,
+		TargetPath:           cfg.Target.Binary,
+		TargetMaxMemoryBytes: int64(cfg.Store.TargetMaxMemoryMB) << 20,
+		HotDeltaCacheBytes:   int64(cfg.Store.HotDeltaCacheMB) << 20,
+		DeltaConcurrency:     cfg.Store.DeltaConcurrency,
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
@@ -64,6 +71,7 @@ func run(cfgPath string) error {
 		ChunkSize:     cfg.Manifest.ChunkSize,
 		RetryAfter:    cfg.Manifest.RetryAfter,
 		TargetVersion: cfg.Target.Version,
+		CacheSize:     cfg.Manifest.CacheSize,
 	}, logger)
 
 	// fsnotify-based auto-reload of the target binary.

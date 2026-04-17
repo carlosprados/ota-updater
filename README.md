@@ -421,6 +421,81 @@ In all other cases `syscall.Exec` is the right default.
 
 ---
 
+## Memory bounds (server, 24/7 operation)
+
+The update-server is designed for **strictly bounded RAM** regardless of
+the size of its history: 100 binaries or 10 000, the memory footprint is
+governed by three knobs in `configs/server.yaml` and nothing else.
+
+```yaml
+store:
+  target_max_memory_mb: 200   # active target binary: kept in RAM iff it fits
+  hot_delta_cache_mb: 512     # hot LRU of compressed delta bytes
+  delta_concurrency: 2        # max concurrent bsdiff runs
+
+manifest:
+  cache_size: 4096            # signed-manifest LRU entry count
+```
+
+### What is held in RAM
+
+| Item | Bound | Notes |
+|---|---|---|
+| Active target binary | ≤ `target_max_memory_mb` | Above the cap, re-read from disk per generation. |
+| Source binaries (historical) | **0** | Never held. Read from disk at each bsdiff generation; the kernel page cache handles OS-level LRU. |
+| Hot delta cache | ≤ `hot_delta_cache_mb` | Byte-budget LRU. Values bigger than the whole budget are rejected (never cached). |
+| Signed manifests | ≤ `cache_size` entries × ~500 B | Entry-count LRU. |
+| Per-generation bsdiff transient | ~20× the larger of (source, target) | Bounded by `delta_concurrency`. |
+
+### Request path `/delta/{from}/{to}`
+
+```
+1. hotDeltas.Get(key)
+   ├─ hit  → serve bytes from RAM, no I/O
+   └─ miss → ↓
+
+2. disk exists?
+   ├─ yes → read file ONCE via singleflight (collapses concurrent campaign
+   │         bursts into one os.Open), populate hotDeltas, serve bytes
+   └─ no  → dispatch async bsdiff generation, reply 404+RetryAfter
+
+3. generateAndCache (one at a time per key, bounded by delta_concurrency):
+   - load oldBin from disk; load targetBin from RAM or disk
+   - bsdiff + zstd → bytes
+   - writeAtomic to disk + hotDeltas.Put
+```
+
+During a campaign where thousands of agents ask for the same delta,
+`singleflight` on the post-miss disk read means **one file open and one
+allocation** instead of thousands. This is what keeps the server stable
+under coordinated rollouts.
+
+### Sizing the knobs
+
+- **`target_max_memory_mb`** — set to the biggest target you plan to ship
+  plus some headroom. Past the cap the server still works, but every
+  delta generation re-reads the target from disk (I/O cost, not a
+  correctness issue).
+- **`hot_delta_cache_mb`** — size for one typical campaign. A rollout
+  that fans a single 10 MiB delta to thousands of devices fits
+  comfortably at the default. Bursts that span many different deltas
+  benefit from a higher cap; evictions are graceful (LRU drops the
+  coldest).
+- **`delta_concurrency`** — each concurrent bsdiff peaks at roughly 20×
+  the binary size in RAM. With a 50 MiB target and `delta_concurrency=2`,
+  reserve ~2 GiB of RAM for generation on top of the caps above.
+
+### Known limits
+
+- **bsdiff is the delta algorithm**. For targets much bigger than ~100 MiB
+  its RAM footprint (~20× the binary) gets uncomfortable. We evaluated
+  librsync and rejected it: its deltas are **~100× larger than bsdiff's**
+  on realistic Go binaries (a single string change produces a 705 KiB
+  rsync delta vs 5.8 KiB bsdiff). On NB-IoT downlink, that multiplier
+  dominates over any RAM savings. See `benchmark/` for the harness.
+
+---
+
 ## Implementation progress
 
 The 18-step plan from `prompt-ota-updater.md` is complete. The detailed

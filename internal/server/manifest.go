@@ -7,12 +7,16 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"os"
-	"sync"
 
 	"github.com/amplia/ota-updater/pkg/crypto"
 	"github.com/amplia/ota-updater/pkg/protocol"
 )
+
+// DefaultManifestCacheSize is the default entry count for the signed-manifest
+// LRU. Each entry holds a tiny ManifestResponse (~500 B); 4096 keeps memory
+// around 2 MiB while comfortably covering even a large fleet of distinct
+// source versions during a campaign.
+const DefaultManifestCacheSize = 4096
 
 // ManifesterConfig tunes Manifester behavior. Zero values fall back to
 // protocol defaults.
@@ -20,15 +24,17 @@ type ManifesterConfig struct {
 	ChunkSize     int    // bytes per download chunk; 0 → protocol.DefaultChunkSize
 	RetryAfter    int    // seconds to tell agents to wait while a delta generates; 0 → 30
 	TargetVersion string // human-readable version label returned to agents
+	CacheSize     int    // signed-manifest LRU entry count; 0 → DefaultManifestCacheSize
 }
 
 // Manifester builds signed ManifestResponse payloads in response to agent
 // heartbeats. It does not speak any transport — it just produces the struct.
 //
-// For scale (thousands of agents), signed responses are cached in memory
-// keyed by (fromHash, targetHash). Cache entries are immutable; callers
-// receive a shared pointer and must NOT mutate it. Call Invalidate() after
-// changing the target binary (see Store.Reload at step 9).
+// Signed responses are cached in an entry-count LRU keyed by
+// (fromHash, targetHash). The cache is bounded by CacheSize so that a long
+// history of distinct source versions cannot grow the Go heap. Cache entries
+// are immutable; callers receive a shared pointer and must NOT mutate it.
+// Call Invalidate() after changing the target binary (see Store.Reload).
 type Manifester struct {
 	store         *Store
 	priv          ed25519.PrivateKey
@@ -37,8 +43,7 @@ type Manifester struct {
 	targetVersion string
 	logger        *slog.Logger
 
-	mu    sync.RWMutex
-	cache map[string]*protocol.ManifestResponse
+	cache *entryLRU[*protocol.ManifestResponse]
 }
 
 // NewManifester returns a Manifester using the given store for delta
@@ -50,6 +55,9 @@ func NewManifester(store *Store, priv ed25519.PrivateKey, cfg ManifesterConfig, 
 	if cfg.RetryAfter == 0 {
 		cfg.RetryAfter = 30
 	}
+	if cfg.CacheSize <= 0 {
+		cfg.CacheSize = DefaultManifestCacheSize
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -60,7 +68,7 @@ func NewManifester(store *Store, priv ed25519.PrivateKey, cfg ManifesterConfig, 
 		retryAfter:    cfg.RetryAfter,
 		targetVersion: cfg.TargetVersion,
 		logger:        logger,
-		cache:         make(map[string]*protocol.ManifestResponse),
+		cache:         newEntryLRU[*protocol.ManifestResponse](cfg.CacheSize),
 	}
 }
 
@@ -68,9 +76,7 @@ func NewManifester(store *Store, priv ed25519.PrivateKey, cfg ManifesterConfig, 
 // changes (Store.Reload) so that the next heartbeat rebuilds a fresh,
 // correctly-signed response for the new target.
 func (m *Manifester) Invalidate() {
-	m.mu.Lock()
-	clear(m.cache)
-	m.mu.Unlock()
+	m.cache.Clear()
 }
 
 // Build produces a ManifestResponse for the given heartbeat. Possible
@@ -97,8 +103,17 @@ func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protoc
 		return &protocol.ManifestResponse{UpdateAvailable: false}, nil
 	}
 
-	if !m.store.HasDelta(hb.VersionHash) {
-		m.store.StartDeltaGeneration(hb.VersionHash)
+	key := hb.VersionHash + "_" + targetHash
+	if cached, ok := m.cache.Get(key); ok {
+		return cached, nil
+	}
+
+	data, found, err := m.store.GetDeltaBytes(ctx, hb.VersionHash)
+	if err != nil {
+		return nil, fmt.Errorf("fetch delta bytes: %w", err)
+	}
+	if !found {
+		// Not on disk yet — GetDeltaBytes already dispatched async generation.
 		m.logger.Info("delta not ready, async generation dispatched",
 			"device_id", hb.DeviceID,
 			"from", hb.VersionHash,
@@ -111,17 +126,6 @@ func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protoc
 			TargetHash:      targetHash,
 			RetryAfter:      m.retryAfter,
 		}, nil
-	}
-
-	key := hb.VersionHash + "_" + targetHash
-	if cached := m.cacheGet(key); cached != nil {
-		return cached, nil
-	}
-
-	deltaPath := m.store.DeltaPath(hb.VersionHash, targetHash)
-	data, err := os.ReadFile(deltaPath)
-	if err != nil {
-		return nil, fmt.Errorf("read cached delta: %w", err)
 	}
 	sum := sha256.Sum256(data)
 	deltaHash := hex.EncodeToString(sum[:])
@@ -147,7 +151,7 @@ func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protoc
 		Signature:       hex.EncodeToString(sig),
 		DeltaEndpoint:   protocol.DeltaPath(hb.VersionHash, targetHash),
 	}
-	m.cachePut(key, resp)
+	m.cache.Put(key, resp)
 	m.logger.Info("manifest built and cached",
 		"device_id", hb.DeviceID,
 		"from", hb.VersionHash,
@@ -155,18 +159,6 @@ func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protoc
 		"delta_size", size,
 	)
 	return resp, nil
-}
-
-func (m *Manifester) cacheGet(key string) *protocol.ManifestResponse {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.cache[key]
-}
-
-func (m *Manifester) cachePut(key string, resp *protocol.ManifestResponse) {
-	m.mu.Lock()
-	m.cache[key] = resp
-	m.mu.Unlock()
 }
 
 func chunkCount(size int64, chunk int) int {
