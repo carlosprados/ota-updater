@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amplia/ota-updater/internal/crypto"
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/crypto"
+	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
 // httpFixture sets up a running test server with a pre-cached delta so Range

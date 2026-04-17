@@ -13,7 +13,7 @@ import (
 	"github.com/plgd-dev/go-coap/v3/message/codes"
 	"github.com/plgd-dev/go-coap/v3/mux"
 
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
 // CoAPConfig bundles dependencies for the CoAP handler set.

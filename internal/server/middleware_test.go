@@ -19,7 +19,7 @@ import (
 	"github.com/plgd-dev/go-coap/v3/options"
 	"github.com/plgd-dev/go-coap/v3/udp"
 
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
 func TestRecoverHTTP_PanicBecomes500(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 	"os"
 	"sync"
 
-	"github.com/amplia/ota-updater/internal/crypto"
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/crypto"
+	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
 // ManifesterConfig tunes Manifester behavior. Zero values fall back to

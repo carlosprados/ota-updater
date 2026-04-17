@@ -13,7 +13,7 @@ import (
 	"github.com/plgd-dev/go-coap/v3/message/codes"
 	"github.com/plgd-dev/go-coap/v3/udp"
 
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
 // CoAPClient implements ProtocolClient over CoAP+CBOR (UDP plain, no DTLS).

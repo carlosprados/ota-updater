@@ -16,8 +16,8 @@ import (
 	"github.com/plgd-dev/go-coap/v3/udp"
 	udpClient "github.com/plgd-dev/go-coap/v3/udp/client"
 
-	"github.com/amplia/ota-updater/internal/crypto"
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/crypto"
+	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
 // coapFixture spins up an in-process CoAP server on an ephemeral UDP port.

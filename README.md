@@ -4,9 +4,10 @@ Lightweight OTA (Over-The-Air) update system in Go, tuned for **NB-IoT
 constrained networks** (~20-60 kbps, high latency, frequent disconnects).
 Ships two binaries plus a keygen tool.
 
-> **Status — work in progress.** This README reflects the current subset of
-> the 18-step implementation plan. It will be completed at step 18. See
-> `CLAUDE.md` for the living checklist.
+> **Status — feature-complete.** All 18 steps of the implementation plan
+> are done; both binaries build static, the full unit-test suite is green,
+> and an end-to-end integration test passes. See `CLAUDE.md` for the
+> per-step changelog.
 
 ---
 
@@ -182,22 +183,128 @@ commit.
 
 ---
 
-## Device-side embedding (library usage)
+## Embedding as a library
 
-**Planned for step 18.** The agent packages (`internal/agent/…` today)
-will be promoted to `pkg/agent/` so any Go binary can embed self-update
-behavior:
+The agent lives in `pkg/agent/` and is designed for external import. Any
+Go binary can embed the same OTA loop that powers `cmd/edge-agent` —
+heartbeats, signed-manifest verification, delta download, A/B swap,
+watchdog and self-restart — without forking the project.
+
+`cmd/edge-agent/main.go` is a thin (~190 line) reference implementation.
+The minimum viable embedder looks like this:
 
 ```go
-// Sketch — API subject to change before step 18.
-updater := agent.New(agent.Config{ /* … */ })
-if err := updater.Run(ctx); err != nil {
-    log.Fatal(err)
+package main
+
+import (
+    "context"
+    "log"
+    "log/slog"
+    "net/http"
+    "os"
+    "os/signal"
+    "path/filepath"
+    "syscall"
+    "time"
+
+    "github.com/amplia/ota-updater/pkg/agent"
+    "github.com/amplia/ota-updater/pkg/crypto"
+    "github.com/amplia/ota-updater/pkg/protocol"
+)
+
+func main() {
+    logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+    pubKey, err := crypto.LoadPublicKey("/etc/myapp/agent.pub")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    slotsDir := "/var/lib/myapp/slots"
+    slots, err := agent.NewSlotManager(slotsDir, "/var/lib/myapp/current", logger)
+    if err != nil {
+        log.Fatal(err)
+    }
+    bootCounter, err := agent.NewBootCounter(filepath.Join(slotsDir, agent.BootCountFileName))
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Pick one transport. NewClientPair enforces that the heartbeat client
+    // and the delta transport speak the same wire protocol.
+    httpClient := &http.Client{}
+    primary, err := agent.NewClientPair(
+        agent.NewHTTPClient("http://updates.example.com:8080", httpClient),
+        agent.NewHTTPTransport(httpClient),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // The watchdog probe re-uses the primary client to confirm the new
+    // binary can reach the server after a swap.
+    checker := &agent.DefaultHealthChecker{
+        Heartbeat: func(ctx context.Context) error {
+            _, hash, _, err := slots.ActiveSlot()
+            if err != nil {
+                return err
+            }
+            _, err = primary.Client.Heartbeat(ctx, &protocol.Heartbeat{
+                DeviceID:    "device-001",
+                VersionHash: hash,
+                Timestamp:   time.Now().Unix(),
+            })
+            return err
+        },
+    }
+    watchdog, err := agent.NewWatchdog(bootCounter, checker, agent.WatchdogConfig{}, logger)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    updater, err := agent.NewUpdater(agent.UpdaterDeps{
+        Config: agent.UpdaterConfig{
+            DeviceID: "device-001",
+            StateDir: slotsDir,
+        },
+        Primary:   primary,
+        Slots:     slots,
+        PublicKey: pubKey,
+        Watchdog:  watchdog,
+        Restart:   agent.ExecRestart{}, // or agent.ExitRestart{} under a supervisor
+        Logger:    logger,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+    defer stop()
+
+    if err := updater.Run(ctx); err != nil && err != context.Canceled {
+        log.Fatal(err)
+    }
 }
 ```
 
-`cmd/edge-agent` will become a thin wrapper around this library.
-Full example in this README at step 18.
+Customization points the API exposes by design:
+
+- **`RestartStrategy`** — `ExecRestart` (default, `syscall.Exec`) or
+  `ExitRestart` for supervisor-driven restarts. Implement the interface
+  for anything else.
+- **`HealthChecker`** — the post-swap probe. The default heartbeats the
+  server; richer embedders can compose application-level checks.
+- **`HWInfoFunc`** in `UpdaterDeps` — report free RAM/disk or hardware
+  identifiers the server can use for fleet analytics.
+- **`Logging.SetLevel`** — change the slog level at runtime without
+  restarting the process.
+- **Library-only flow** — `Updater.RunOnce(ctx)` and `Updater.BootPhase(ctx)`
+  are exported so embedders can drive the lifecycle from their own loop
+  instead of `Updater.Run`.
+
+The companion packages — `pkg/protocol`, `pkg/crypto`, `pkg/delta`,
+`pkg/compression` — are also exported. Re-using them from another
+binary is supported.
 
 ---
 
@@ -316,23 +423,30 @@ In all other cases `syscall.Exec` is the right default.
 
 ## Implementation progress
 
-Tracked as a checklist in `CLAUDE.md` (18-step plan from
-`prompt-ota-updater.md`). At the time of writing, steps 1-7 are
-complete; steps 8-18 are pending.
+The 18-step plan from `prompt-ota-updater.md` is complete. The detailed
+checklist with per-step notes lives in `CLAUDE.md`.
 
 ---
 
 ## Repo layout
 
 ```
-cmd/            # main packages for the two binaries (pending)
-docs/           # long-form design docs (signing, …)
+cmd/
+  edge-agent/        # thin wrapper around pkg/agent.Updater
+  update-server/     # HTTP+CoAP server entrypoint
+pkg/                 # exported, importable as a library
+  agent/             # device-side orchestrator: Updater, SlotManager, Watchdog,
+                     #   ProtocolClient (HTTP+CoAP), Downloader, RestartStrategy
+  protocol/          # wire types (JSON + CBOR) shared by HTTP and CoAP
+  crypto/            # Ed25519 sign/verify + PEM key I/O
+  delta/             # bsdiff + zstd patch pipeline
+  compression/       # zstd wrappers
 internal/
-  agent/        # device-side logic (pending)
-  compression/  # zstd wrappers
-  crypto/       # Ed25519 sign/verify + PEM key I/O
-  delta/        # bsdiff + zstd patch pipeline
-  protocol/     # wire types (JSON + CBOR) shared by HTTP and CoAP
-  server/       # store, manifester, HTTP handler (CoAP pending)
-tools/keygen/   # Ed25519 keypair generator CLI
+  server/            # binary-only: only consumed by cmd/update-server
+integration/         # //go:build integration end-to-end test
+tools/keygen/        # Ed25519 keypair generator CLI
+docs/
+  signing.md         # authoritative signature scheme reference
+configs/             # example agent.yaml and server.yaml
+Taskfile.yml         # build/test/ci task runner config
 ```

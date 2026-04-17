@@ -5,7 +5,7 @@ import (
 
 	"github.com/gabstv/go-bsdiff/pkg/bspatch"
 
-	"github.com/amplia/ota-updater/internal/compression"
+	"github.com/amplia/ota-updater/pkg/compression"
 )
 
 // Apply reconstructs the target binary from oldBin and a zstd-compressed
