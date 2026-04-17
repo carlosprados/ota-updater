@@ -36,9 +36,14 @@ tasks:
       - go run ./tools/keygen -out {{.KEYS_DIR}}
 
   test:
-    desc: Run the full test suite with race detector
+    desc: Run the full test suite with race detector (excludes integration tag)
     cmds:
       - go test ./... -race -count=1
+
+  test-integration:
+    desc: Run end-to-end integration tests (requires the `integration` build tag)
+    cmds:
+      - go test -tags integration ./integration/... -race -count=1 -v
 
   vet:
     desc: Run go vet on all packages
