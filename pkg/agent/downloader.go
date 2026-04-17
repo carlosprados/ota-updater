@@ -10,6 +10,8 @@ import (
 	"math/rand"
 	"os"
 	"time"
+
+	"github.com/amplia/ota-updater/pkg/atomicio"
 )
 
 // ErrResumeUnsupported is returned by transports that can't honor a non-zero
@@ -242,7 +244,11 @@ func (d *Downloader) saveState(tgt FetchTarget, tmpPath string, offset int64) {
 		d.logger.Warn("save state marshal", "err", err)
 		return
 	}
-	if err := os.WriteFile(d.cfg.StatePath, data, 0o644); err != nil {
+	// Atomic + durable: a crash mid-write used to corrupt the JSON, which
+	// loadState silently tolerated by discarding the whole resume state —
+	// losing minutes of NB-IoT downlink. With atomicio.WriteFile the worst
+	// case is "state unchanged", never "state corrupt".
+	if err := atomicio.WriteFile(d.cfg.StatePath, data, 0o644, d.logger); err != nil {
 		d.logger.Warn("save state write", "err", err)
 	}
 }
