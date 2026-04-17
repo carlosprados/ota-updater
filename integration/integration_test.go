@@ -26,8 +26,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amplia/ota-updater/internal/agent"
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/agent"
+	"github.com/amplia/ota-updater/pkg/protocol"
 	"github.com/amplia/ota-updater/internal/server"
 )
 

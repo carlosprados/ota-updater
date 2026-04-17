@@ -16,9 +16,9 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/amplia/ota-updater/internal/crypto"
-	"github.com/amplia/ota-updater/internal/delta"
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/crypto"
+	"github.com/amplia/ota-updater/pkg/delta"
+	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
 // pendingUpdateFile is the basename of the marker file the Updater writes

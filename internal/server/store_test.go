@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/amplia/ota-updater/internal/delta"
+	"github.com/amplia/ota-updater/pkg/delta"
 )
 
 // storeFixture creates a Store with an old binary registered and a target

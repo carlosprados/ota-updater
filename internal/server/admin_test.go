@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
 func adminFixture(t *testing.T) (token string, base string, logging *Logging, s *Store, m *Manifester, oldHash string, done func()) {

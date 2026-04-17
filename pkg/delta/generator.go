@@ -9,7 +9,7 @@ import (
 
 	"github.com/gabstv/go-bsdiff/pkg/bsdiff"
 
-	"github.com/amplia/ota-updater/internal/compression"
+	"github.com/amplia/ota-updater/pkg/compression"
 )
 
 // Generate produces a zstd-compressed bsdiff patch that transforms oldBin into

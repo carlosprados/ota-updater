@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
 // HTTPConfig bundles dependencies for the HTTP handler set.

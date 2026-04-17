@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/amplia/ota-updater/internal/delta"
+	"github.com/amplia/ota-updater/pkg/delta"
 )
 
 // ErrBinaryNotFound is returned when a requested source binary is not in the

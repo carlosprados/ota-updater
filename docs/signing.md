@@ -38,7 +38,7 @@ signature = Ed25519.Sign(server_private_key, payload)
   hashes the message with SHA-512; adding an outer SHA-256 would be a
   redundant layer.
 
-Implementation: `internal/protocol/signing.go` →
+Implementation: `pkg/protocol/signing.go` →
 `ManifestSigningPayload(targetHashHex, deltaHashHex) []byte`.
 
 ### 2.1 Encoding on the wire
@@ -50,7 +50,7 @@ verification is **always reconstructed from the raw bytes**, never from
 the hex string, so there is no ambiguity about case or whitespace.
 
 Wire field: `ManifestResponse.Signature` — see
-`internal/protocol/messages.go`.
+`pkg/protocol/messages.go`.
 
 ---
 
@@ -64,7 +64,7 @@ Wire field: `ManifestResponse.Signature` — see
   The tool writes `server.key` and `agent.pub` and **refuses to
   overwrite existing files** (O_EXCL) to prevent accidental key loss.
 
-Implementation: `internal/crypto/{signer,verifier}.go`,
+Implementation: `pkg/crypto/{signer,verifier}.go`,
 `tools/keygen/main.go`.
 
 ### 3.1 Key distribution
@@ -137,7 +137,7 @@ The order matters:
 - Step 6 is redundant with steps 2+4 under honest failure modes but
   catches local disk corruption or bspatch bugs.
 
-Implementation will live in `internal/agent/updater.go` (step 14 of
+Implementation will live in `pkg/agent/updater.go` (step 14 of
 the plan).
 
 ---
@@ -209,10 +209,10 @@ NB-IoT downlink budgets from being wasted on corrupt payloads.
 
 | Concern | File |
 |---|---|
-| Canonical payload | `internal/protocol/signing.go` |
-| Sign / Verify primitives | `internal/crypto/signer.go`, `internal/crypto/verifier.go` |
-| Wire field definition | `internal/protocol/messages.go` → `ManifestResponse.Signature` |
+| Canonical payload | `pkg/protocol/signing.go` |
+| Sign / Verify primitives | `pkg/crypto/signer.go`, `pkg/crypto/verifier.go` |
+| Wire field definition | `pkg/protocol/messages.go` → `ManifestResponse.Signature` |
 | Key generation CLI | `tools/keygen/main.go` |
 | Server-side assembly | `internal/server/manifest.go` → `Manifester.Build` |
-| Agent-side verification order | `internal/agent/updater.go` (step 14, pending) |
-| Tests covering signatures | `internal/crypto/crypto_test.go`, `internal/protocol/signing_test.go`, `internal/server/manifest_test.go`, `internal/server/http_handler_test.go` |
+| Agent-side verification order | `pkg/agent/updater.go` (step 14, pending) |
+| Tests covering signatures | `pkg/crypto/crypto_test.go`, `pkg/protocol/signing_test.go`, `internal/server/manifest_test.go`, `internal/server/http_handler_test.go` |

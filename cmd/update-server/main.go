@@ -20,7 +20,7 @@ import (
 	"github.com/plgd-dev/go-coap/v3/options"
 	"github.com/plgd-dev/go-coap/v3/udp"
 
-	"github.com/amplia/ota-updater/internal/crypto"
+	"github.com/amplia/ota-updater/pkg/crypto"
 	"github.com/amplia/ota-updater/internal/server"
 )
 

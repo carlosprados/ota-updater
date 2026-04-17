@@ -18,9 +18,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/amplia/ota-updater/internal/agent"
-	"github.com/amplia/ota-updater/internal/crypto"
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/agent"
+	"github.com/amplia/ota-updater/pkg/crypto"
+	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
 func main() {

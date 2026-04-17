@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amplia/ota-updater/internal/crypto"
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/crypto"
+	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
 // manifesterFixture reuses storeFixture from store_test.go and layers on a

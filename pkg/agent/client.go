@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"github.com/amplia/ota-updater/internal/protocol"
+	"github.com/amplia/ota-updater/pkg/protocol"
 )
 
 // ProtocolClient abstracts heartbeat and report exchanges with the
