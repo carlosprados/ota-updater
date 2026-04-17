@@ -35,8 +35,11 @@ type CoAPYAMLConfig struct {
 }
 
 type StoreYAMLConfig struct {
-	BinariesDir string `yaml:"binaries_dir"`
-	DeltasDir   string `yaml:"deltas_dir"`
+	BinariesDir       string `yaml:"binaries_dir"`
+	DeltasDir         string `yaml:"deltas_dir"`
+	TargetMaxMemoryMB int    `yaml:"target_max_memory_mb"` // cap on keeping the active target in RAM
+	HotDeltaCacheMB   int    `yaml:"hot_delta_cache_mb"`   // byte budget of the hot delta LRU
+	DeltaConcurrency  int    `yaml:"delta_concurrency"`    // max concurrent bsdiff runs
 }
 
 type CryptoYAMLConfig struct {
@@ -62,6 +65,7 @@ type LoggingConfig struct {
 type ManifestYAMLConfig struct {
 	ChunkSize  int `yaml:"chunk_size"`
 	RetryAfter int `yaml:"retry_after"`
+	CacheSize  int `yaml:"cache_size"` // signed-manifest LRU entry count
 }
 
 // LoadConfig reads, parses, defaults and validates a YAML config.
@@ -108,6 +112,18 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Store.DeltasDir == "" {
 		c.Store.DeltasDir = "./store/deltas"
+	}
+	if c.Store.TargetMaxMemoryMB == 0 {
+		c.Store.TargetMaxMemoryMB = 200
+	}
+	if c.Store.HotDeltaCacheMB == 0 {
+		c.Store.HotDeltaCacheMB = 512
+	}
+	if c.Store.DeltaConcurrency == 0 {
+		c.Store.DeltaConcurrency = 2
+	}
+	if c.Manifest.CacheSize == 0 {
+		c.Manifest.CacheSize = 4096
 	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"

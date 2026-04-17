@@ -18,6 +18,20 @@ store:
   binaries_dir: "./store/binaries" # versioned source binaries: {hash}.bin
   deltas_dir: "./store/deltas"     # cached deltas: {from}_{to}.delta.zst
 
+  # Memory bounds. The server is designed to hold a strictly bounded amount
+  # of data in RAM regardless of how many distinct source versions agents
+  # have ever reported. See README "Memory bounds" for the full model.
+  target_max_memory_mb: 200        # keep the active target in RAM only if it
+                                   # fits under this cap; larger targets are
+                                   # read from disk on every generation.
+  hot_delta_cache_mb: 512          # byte budget of the in-RAM LRU that fronts
+                                   # disk reads of cached deltas. Serves
+                                   # campaign bursts (many devices asking the
+                                   # same delta) without hitting the disk.
+  delta_concurrency: 2             # max concurrent bsdiff generations. Raise
+                                   # only on hosts with generous RAM, since
+                                   # each bsdiff peaks at ~20x the binary size.
+
 crypto:
   private_key: "./keys/server.key" # Ed25519 PKCS#8 PEM, mode 0600
 
@@ -40,3 +54,6 @@ logging:
 manifest:
   chunk_size: 4096                 # bytes per download chunk recommendation
   retry_after: 30                  # seconds, when a delta is still being built
+  cache_size: 4096                 # signed-manifest LRU entry count. Each
+                                   # entry is ~500 B; 4096 keeps this cache
+                                   # around 2 MiB in the worst case.

@@ -2,11 +2,9 @@ package server
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/plgd-dev/go-coap/v3/message"
@@ -142,37 +140,32 @@ func (c *coapHandler) delta(w mux.ResponseWriter, r *mux.Message) {
 		c.respond(w, codes.NotFound, message.TextPlain, nil)
 		return
 	}
-	path := c.store.DeltaPath(from, to)
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		dispatched := false
-		if to == c.store.TargetHash() && c.store.HasBinary(from) {
-			dispatched = c.store.StartDeltaGeneration(from)
-		}
+	if to != c.store.TargetHash() {
+		c.respond(w, codes.NotFound, message.TextPlain, nil)
+		return
+	}
+
+	data, found, err := c.store.GetDeltaBytes(r.Context(), from)
+	if err != nil {
+		c.logger.Error("fetch delta bytes",
+			"op", "delta_get", "transport", "coap", "from", from, "to", to, "err", err)
+		c.respond(w, codes.InternalServerError, message.TextPlain, nil)
+		return
+	}
+	if !found {
 		c.logger.Info("delta not cached",
-			"op", "delta_get", "transport", "coap",
-			"from", from, "to", to, "async_dispatched", dispatched,
+			"op", "delta_get", "transport", "coap", "from", from, "to", to,
 		)
 		c.respond(w, codes.NotFound, message.TextPlain, nil)
 		return
 	}
-	if err != nil {
-		c.logger.Error("open delta",
-			"op", "delta_get", "transport", "coap", "from", from, "to", to, "err", err,
-		)
-		c.respond(w, codes.InternalServerError, message.TextPlain, nil)
-		return
-	}
-	if info, statErr := f.Stat(); statErr == nil {
-		c.logger.Info("delta served",
-			"op", "delta_get", "transport", "coap",
-			"from", from, "to", to, "size", info.Size(),
-		)
-	}
-	// go-coap auto-applies Block2 when the body is a sized ReadSeeker; *os.File
-	// qualifies. Closing is the library's responsibility once it has read the
-	// body; we hand ownership over with SetResponse.
-	c.respond(w, codes.Content, message.AppOctets, f)
+	c.logger.Info("delta served",
+		"op", "delta_get", "transport", "coap",
+		"from", from, "to", to, "size", len(data),
+	)
+	// bytes.Reader is an io.ReadSeeker, which go-coap uses to auto-apply
+	// Block2. No file descriptor is held here — memory is the cache.
+	c.respond(w, codes.Content, message.AppOctets, bytes.NewReader(data))
 }
 
 func (c *coapHandler) respond(w mux.ResponseWriter, code codes.Code, mt message.MediaType, body io.ReadSeeker) {

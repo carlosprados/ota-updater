@@ -1,12 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
+	"time"
 
 	"github.com/amplia/ota-updater/pkg/protocol"
 )
@@ -117,41 +116,38 @@ func (h *httpHandler) delta(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-
-	path := h.store.DeltaPath(from, to)
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		// Kick off async generation so a follow-up heartbeat+request succeeds.
-		dispatched := false
-		if to == h.store.TargetHash() && h.store.HasBinary(from) {
-			dispatched = h.store.StartDeltaGeneration(from)
-		}
-		h.logger.Info("delta not cached",
-			"op", "delta_get", "from", from, "to", to,
-			"async_dispatched", dispatched, "remote", r.RemoteAddr,
-		)
+	// The agent only ever asks for deltas to the current target; any other
+	// to-hash is either stale or crafted, and we don't persist history on
+	// disk so there's nothing to serve.
+	if to != h.store.TargetHash() {
 		http.NotFound(w, r)
 		return
 	}
+
+	data, found, err := h.store.GetDeltaBytes(r.Context(), from)
 	if err != nil {
-		h.logger.Error("open delta", "op", "delta_get", "from", from, "to", to, "err", err)
-		http.Error(w, "open delta", http.StatusInternalServerError)
+		h.logger.Error("fetch delta bytes",
+			"op", "delta_get", "from", from, "to", to, "err", err)
+		http.Error(w, "fetch delta", http.StatusInternalServerError)
 		return
 	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		http.Error(w, "stat delta", http.StatusInternalServerError)
+	if !found {
+		h.logger.Info("delta not cached",
+			"op", "delta_get", "from", from, "to", to, "remote", r.RemoteAddr,
+		)
+		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	h.logger.Info("delta served",
 		"op", "delta_get", "from", from, "to", to,
-		"size", info.Size(), "range", r.Header.Get("Range"), "remote", r.RemoteAddr,
+		"size", len(data), "range", r.Header.Get("Range"), "remote", r.RemoteAddr,
 	)
-	// ServeContent handles Range, Accept-Ranges, Content-Length, 206.
-	http.ServeContent(w, r, filepath.Base(path), info.ModTime(), f)
+	// http.ServeContent handles Range, Accept-Ranges, Content-Length, 206.
+	// Passing zero-valued time disables If-Modified-Since handling, which is
+	// fine: the delta bytes are immutable for a given (from, to) pair and
+	// the client validates via the SHA-256 in the signed manifest.
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

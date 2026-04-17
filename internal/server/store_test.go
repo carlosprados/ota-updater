@@ -40,7 +40,9 @@ func storeFixture(t *testing.T) (*Store, string) {
 
 	// silent logger for tests
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s, err := Open(context.Background(), binDir, deltaDir, targetPath, logger)
+	s, err := Open(context.Background(), StoreOptions{
+		BinariesDir: binDir, DeltasDir: deltaDir, TargetPath: targetPath,
+	}, logger)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

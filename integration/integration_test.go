@@ -113,7 +113,9 @@ func setupE2E(t *testing.T) *e2eFixture {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	store, err := server.Open(context.Background(), binariesDir, deltasDir, targetPath, logger)
+	store, err := server.Open(context.Background(), server.StoreOptions{
+		BinariesDir: binariesDir, DeltasDir: deltasDir, TargetPath: targetPath,
+	}, logger)
 	if err != nil {
 		t.Fatalf("server.Open: %v", err)
 	}
