@@ -56,6 +56,8 @@ func run(cfgPath string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	metrics := server.NewMetrics()
+
 	store, err := server.Open(ctx, server.StoreOptions{
 		BinariesDir:          cfg.Store.BinariesDir,
 		DeltasDir:            cfg.Store.DeltasDir,
@@ -63,6 +65,9 @@ func run(cfgPath string) error {
 		TargetMaxMemoryBytes: int64(cfg.Store.TargetMaxMemoryMB) << 20,
 		HotDeltaCacheBytes:   int64(cfg.Store.HotDeltaCacheMB) << 20,
 		DeltaConcurrency:     cfg.Store.DeltaConcurrency,
+		DiskSpaceMinFreePct:  cfg.Store.DiskSpaceMinFreePct,
+		DiskSpaceMinFreeMB:   cfg.Store.DiskSpaceMinFreeMB,
+		Metrics:              metrics,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
@@ -73,6 +78,7 @@ func run(cfgPath string) error {
 		RetryAfter:    cfg.Manifest.RetryAfter,
 		TargetVersion: cfg.Target.Version,
 		CacheSize:     cfg.Manifest.CacheSize,
+		Metrics:       metrics,
 	}, logger)
 
 	// fsnotify-based auto-reload of the target binary. Tracked so the main
@@ -106,11 +112,12 @@ func run(cfgPath string) error {
 		Manifester:      manifester,
 		Logging:         logging,
 		Logger:          logger,
+		Metrics:         metrics,
 		RateLimitPerSec: cfg.Admin.RateLimitPerSec,
 		RateLimitBurst:  cfg.Admin.RateLimitBurst,
 	})
 	apiHandler := server.NewHTTPHandler(server.HTTPConfig{
-		Store: store, Manifester: manifester, Logger: logger,
+		Store: store, Manifester: manifester, Logger: logger, Metrics: metrics,
 	})
 	// Catch-all: anything not matched by /admin/* goes through the API mux
 	// (which has its own method+path patterns and panic recovery).
@@ -136,7 +143,7 @@ func run(cfgPath string) error {
 
 	// CoAP server on UDP.
 	coapRouter, err := server.NewCoAPRouter(server.CoAPConfig{
-		Store: store, Manifester: manifester, Logger: logger,
+		Store: store, Manifester: manifester, Logger: logger, Metrics: metrics,
 	})
 	if err != nil {
 		return fmt.Errorf("coap router: %w", err)
@@ -154,6 +161,35 @@ func run(cfgPath string) error {
 		}
 		close(coapErrCh)
 	}()
+
+	// Optional observability listener (Prometheus /metrics + /debug/pprof).
+	// Bound to a separate address — expected to be loopback or private net.
+	var metricsServer *http.Server
+	if cfg.Metrics.Addr != "" {
+		obsMux := http.NewServeMux()
+		obsMux.Handle("/metrics", metrics.Handler())
+		if cfg.Metrics.PprofEnabled {
+			server.RegisterPprof(obsMux)
+			logger.Warn("pprof endpoints enabled on observability listener",
+				"op", "startup", "addr", cfg.Metrics.Addr,
+				"note", "expose only on loopback or private net",
+			)
+		}
+		metricsServer = &http.Server{
+			Addr:              cfg.Metrics.Addr,
+			Handler:           obsMux,
+			ReadHeaderTimeout: 5 * time.Second,
+			ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
+		}
+		goroutines.Add(1)
+		go func() {
+			defer goroutines.Done()
+			logger.Info("observability listening", "op", "startup", "addr", cfg.Metrics.Addr, "pprof", cfg.Metrics.PprofEnabled)
+			if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("observability listener exited", "op", "shutdown", "err", err)
+			}
+		}()
+	}
 
 	// Wait for either a signal or a server failure.
 	select {
@@ -184,6 +220,11 @@ func run(cfgPath string) error {
 	}
 	coapServer.Stop()
 	_ = coapListener.Close()
+	if metricsServer != nil {
+		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("metrics shutdown", "op", "shutdown", "err", err)
+		}
+	}
 	if err := store.Close(shutdownCtx); err != nil {
 		logger.Error("store close", "op", "shutdown", "err", err)
 	}

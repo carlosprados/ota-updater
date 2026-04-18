@@ -291,3 +291,21 @@ func TestSweepStaleTemp_MissingDirIsSilent(t *testing.T) {
 		t.Fatalf("missing dir should be a quiet no-op, got removed=%d failed=%d", removed, failed)
 	}
 }
+
+func TestFree_ReportsPositiveValues(t *testing.T) {
+	dir := t.TempDir()
+	free, total, err := Free(dir)
+	if err != nil {
+		// Non-Unix build will hit this path; accept gracefully.
+		t.Skipf("Free not supported here: %v", err)
+	}
+	if free == 0 {
+		t.Fatalf("free=%d, want > 0", free)
+	}
+	if total == 0 {
+		t.Fatalf("total=%d, want > 0", total)
+	}
+	if free > total {
+		t.Fatalf("free=%d > total=%d", free, total)
+	}
+}

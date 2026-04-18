@@ -37,6 +37,8 @@ store:
   delta_concurrency: 2             # max concurrent bsdiff generations. Raise
                                    # only on hosts with generous RAM, since
                                    # each bsdiff peaks at ~20x the binary size.
+  disk_space_min_free_pct: 10      # startup WARN if binaries/deltas FS is below
+  disk_space_min_free_mb: 100      #   either threshold. 0 disables that check.
 
 crypto:
   private_key: "./keys/server.key" # Ed25519 PKCS#8 PEM, mode 0600
@@ -76,3 +78,12 @@ manifest:
   cache_size: 4096                 # signed-manifest LRU entry count. Each
                                    # entry is ~500 B; 4096 keeps this cache
                                    # around 2 MiB in the worst case.
+
+metrics:
+  # Separate HTTP listener for Prometheus /metrics and optional /debug/pprof.
+  # Bind to loopback or a private-net interface: /metrics has no auth and
+  # pprof exposes process internals. Empty addr disables the listener.
+  addr: "127.0.0.1:9100"
+  # pprof_enabled: true adds /debug/pprof/* to the observability listener.
+  # Keep false in production unless you're actively troubleshooting.
+  pprof_enabled: false
