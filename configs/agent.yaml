@@ -1,0 +1,44 @@
+# edge-agent configuration.
+#
+# This file is consumed by cmd/edge-agent. Library consumers who embed the
+# agent package in their own Go binary can construct an equivalent Config
+# value directly in code — ApplyDefaults() + Validate() provide the same
+# safety net without going through YAML.
+
+server:
+  http_url: "http://update.example.com:8080"    # always nice to have for fallback
+  coap_url: "coap://update.example.com:5683"    # UDP plain; DTLS not enabled
+  # coaps_url: "coaps://update.example.com:5684"  # reserved for future DTLS support
+  transport: "coap"                              # "coap" or "http"
+  fallback: true                                 # try the other transport once per cycle on failure
+
+  coap:
+    block_size: 512                              # RFC 7959 Block2 size (power of 2, 16..1024)
+    ack_timeout: "60s"                           # generous for NB-IoT CON exchanges
+    max_retransmits: 4                           # RFC 7252 default
+    keepalive: "2m"                              # 0 disables
+
+device:
+  id: "edge-001"                                 # unique per device
+  slots_dir: "/opt/agent/slots"                  # A/B slot binaries live here
+  active_symlink: "/opt/agent/current"           # symlink → currently active slot
+
+update:
+  check_interval: "1h"                           # heartbeat cadence
+  jitter: 0.3                                    # ±30% variance per cycle; 0 disables
+  chunk_size: 4096                               # bytes per download chunk
+  max_retries: 10
+  retry_backoff: "30s"
+  watchdog_timeout: "60s"                        # time to confirm health after swap
+
+  # Semver-based auto-update policy. See README "Update policy" for details.
+  auto_update: true                              # master switch; false = detect+log only
+  max_bump: "major"                              # none | patch | minor | major
+  unknown_version_policy: "deny"                 # deny | allow when TargetVersion is not semver
+
+crypto:
+  public_key: "/opt/agent/keys/agent.pub"        # Ed25519 PKIX PEM (shipped with firmware)
+
+logging:
+  level: "info"                                  # debug | info | warn | error
+  format: "text"                                 # text | json

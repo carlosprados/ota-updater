@@ -1,0 +1,78 @@
+# update-server configuration.
+#
+# Paths may be absolute or relative to the process working directory.
+# All durations use Go's time.Duration syntax (e.g. "30s", "2m", "1h").
+
+http:
+  addr: ":8080"
+  read_header_timeout: "5s"
+  read_timeout: "30s"
+  # write_timeout applies to the WHOLE response (bytes sent to the client),
+  # not per chunk. NB-IoT devices download delta payloads at ~20 kbps; a
+  # 1 MiB delta takes ~7 minutes, a 2 MiB delta ~13 minutes. Setting this
+  # below the actual transfer time cuts connections mid-stream — the agent
+  # recovers with Range but the latency cost compounds. Default 10m fits
+  # deltas up to ~1.5 MiB at 20 kbps; raise if your fleet ships larger.
+  write_timeout: "10m"
+  idle_timeout: "2m"
+  shutdown_timeout: "15s"
+
+coap:
+  addr: ":5683"                    # UDP plain. DTLS (coaps://) is not enabled.
+
+store:
+  binaries_dir: "./store/binaries" # versioned source binaries: {hash}.bin
+  deltas_dir: "./store/deltas"     # cached deltas: {from}_{to}.delta.zst
+
+  # Memory bounds. The server is designed to hold a strictly bounded amount
+  # of data in RAM regardless of how many distinct source versions agents
+  # have ever reported. See README "Memory bounds" for the full model.
+  target_max_memory_mb: 200        # keep the active target in RAM only if it
+                                   # fits under this cap; larger targets are
+                                   # read from disk on every generation.
+  hot_delta_cache_mb: 512          # byte budget of the in-RAM LRU that fronts
+                                   # disk reads of cached deltas. Serves
+                                   # campaign bursts (many devices asking the
+                                   # same delta) without hitting the disk.
+  delta_concurrency: 2             # max concurrent bsdiff generations. Raise
+                                   # only on hosts with generous RAM, since
+                                   # each bsdiff peaks at ~20x the binary size.
+
+crypto:
+  private_key: "./keys/server.key" # Ed25519 PKCS#8 PEM, mode 0600
+
+target:
+  version: "1.0.0"                 # human-readable label returned to agents
+  binary: "./store/binaries/latest" # update this path (or replace the file)
+                                    # to publish a new release; fsnotify picks
+                                    # it up, or call POST /admin/reload.
+
+admin:
+  # Bearer token required for POST /admin/reload and POST /admin/loglevel.
+  # Minimum length: 32 characters (~128 bits of entropy). The server rejects
+  # shorter tokens at config load. Generate a fresh one with:
+  #
+  #   openssl rand -hex 16        # 32 hex chars
+  #   openssl rand -base64 24     # 32 base64 chars
+  #
+  # Keep this secret. Run the admin endpoints on a private network / loopback
+  # only — there is no rate limit on the middleware yet.
+  token: "change-me-openssl-rand-hex-16-here"
+  # Token-bucket rate limit applied ONLY to authentication failures (401).
+  # A legitimate client with the correct token never sees 429 no matter how
+  # many times it hits /admin/*. An attacker flooding wrong tokens sees 429
+  # after burst failures and has to wait for refill. Set rate_limit_per_sec
+  # to 0 to disable (not recommended in production).
+  rate_limit_per_sec: 5
+  rate_limit_burst: 20
+
+logging:
+  level: "info"                    # debug | info | warn | error
+  format: "text"                   # text | json
+
+manifest:
+  chunk_size: 4096                 # bytes per download chunk recommendation
+  retry_after: 30                  # seconds, when a delta is still being built
+  cache_size: 4096                 # signed-manifest LRU entry count. Each
+                                   # entry is ~500 B; 4096 keeps this cache
+                                   # around 2 MiB in the worst case.
