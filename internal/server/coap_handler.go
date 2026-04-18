@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/plgd-dev/go-coap/v3/message"
@@ -19,6 +20,7 @@ type CoAPConfig struct {
 	Store      *Store
 	Manifester *Manifester
 	Logger     *slog.Logger
+	Metrics    *Metrics // optional; nil disables per-request metric emission
 }
 
 // NewCoAPRouter returns a go-coap mux.Router wired with the OTA resources:
@@ -35,6 +37,7 @@ func NewCoAPRouter(cfg CoAPConfig) (*mux.Router, error) {
 		store:      cfg.Store,
 		manifester: cfg.Manifester,
 		logger:     cfg.Logger,
+		metrics:    cfg.Metrics,
 	}
 	if c.logger == nil {
 		c.logger = slog.Default()
@@ -57,21 +60,31 @@ type coapHandler struct {
 	store      *Store
 	manifester *Manifester
 	logger     *slog.Logger
+	metrics    *Metrics
 }
 
 func (c *coapHandler) heartbeat(w mux.ResponseWriter, r *mux.Message) {
+	start := time.Now()
+	result := "none"
+	defer func() {
+		c.metrics.ObserveHeartbeat("coap", result, time.Since(start).Seconds())
+	}()
+
 	if r.Code() != codes.POST {
+		result = "bad_request"
 		c.respond(w, codes.MethodNotAllowed, message.TextPlain, nil)
 		return
 	}
 	body, err := r.ReadBody()
 	if err != nil {
+		result = "bad_request"
 		c.respond(w, codes.BadRequest, message.TextPlain, readerOf("read body"))
 		return
 	}
 	var hb protocol.Heartbeat
 	if err := cbor.Unmarshal(body, &hb); err != nil {
 		c.logger.Warn("invalid heartbeat payload", "err", err)
+		result = "bad_request"
 		c.respond(w, codes.BadRequest, message.TextPlain, readerOf("invalid heartbeat"))
 		return
 	}
@@ -80,13 +93,23 @@ func (c *coapHandler) heartbeat(w mux.ResponseWriter, r *mux.Message) {
 		c.logger.Error("manifest build",
 			"op", "heartbeat", "transport", "coap", "device_id", hb.DeviceID, "err", err,
 		)
+		result = "error"
 		c.respond(w, codes.InternalServerError, message.TextPlain, nil)
 		return
 	}
 	buf, err := cbor.Marshal(resp)
 	if err != nil {
+		result = "error"
 		c.respond(w, codes.InternalServerError, message.TextPlain, nil)
 		return
+	}
+	switch {
+	case !resp.UpdateAvailable:
+		result = "none"
+	case resp.RetryAfter > 0:
+		result = "retry"
+	default:
+		result = "update"
 	}
 	c.logger.Info("heartbeat served",
 		"op", "heartbeat", "transport", "coap",
@@ -126,6 +149,15 @@ func (c *coapHandler) report(w mux.ResponseWriter, r *mux.Message) {
 }
 
 func (c *coapHandler) delta(w mux.ResponseWriter, r *mux.Message) {
+	start := time.Now()
+	hotHit := "miss"
+	served := false
+	defer func() {
+		if served {
+			c.metrics.ObserveDeltaServe("coap", hotHit, time.Since(start).Seconds())
+		}
+	}()
+
 	if r.Code() != codes.GET {
 		c.respond(w, codes.MethodNotAllowed, message.TextPlain, nil)
 		return
@@ -145,6 +177,10 @@ func (c *coapHandler) delta(w mux.ResponseWriter, r *mux.Message) {
 		return
 	}
 
+	if _, ok := c.store.PeekHotDelta(from, to); ok {
+		hotHit = "hit"
+	}
+
 	data, found, err := c.store.GetDeltaBytes(r.Context(), from)
 	if err != nil {
 		c.logger.Error("fetch delta bytes",
@@ -159,6 +195,7 @@ func (c *coapHandler) delta(w mux.ResponseWriter, r *mux.Message) {
 		c.respond(w, codes.NotFound, message.TextPlain, nil)
 		return
 	}
+	served = true
 	c.logger.Info("delta served",
 		"op", "delta_get", "transport", "coap",
 		"from", from, "to", to, "size", len(data),

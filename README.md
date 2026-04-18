@@ -574,6 +574,79 @@ In all other cases `syscall.Exec` is the right default.
 
 ---
 
+## Observability
+
+A separate HTTP listener, configurable in `server.yaml`, exposes Prometheus
+metrics and (optionally) `net/http/pprof`. Bind it to loopback or a
+private network — `/metrics` has no authentication and `/debug/pprof`
+reveals process internals.
+
+```yaml
+metrics:
+  addr: "127.0.0.1:9100"   # empty string disables the listener entirely
+  pprof_enabled: false     # flip to true only while actively debugging
+```
+
+### Metrics (prefix `updater_`)
+
+The server publishes standard `go_*` / `process_*` collectors plus:
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `updater_heartbeats_total` | counter | `transport`, `result` | `result` ∈ `none` · `update` · `retry` · `bad_request` · `error`. |
+| `updater_heartbeat_duration_seconds` | histogram | `transport` | Server-side wall time per heartbeat. |
+| `updater_deltas_served_total` | counter | `transport`, `hot_hit` | `hot_hit` ∈ `hit`/`miss`. Watch this to size `hot_delta_cache_mb`. |
+| `updater_delta_serve_duration_seconds` | histogram | `transport` | Includes hot-miss disk reads. |
+| `updater_delta_generations_total` | counter | `result` | `ok` / `error`. |
+| `updater_delta_generate_duration_seconds` | histogram | — | Wall time of bsdiff runs (bounded by `delta_concurrency`). |
+| `updater_async_generations_inflight` | gauge | — | Concurrent bsdiff goroutines. Sustained high = bump concurrency or investigate thundering herds. |
+| `updater_manifest_cache_entries` | gauge | — | Signed-manifest LRU occupancy. |
+| `updater_hot_delta_cache_bytes` | gauge | — | Current bytes held in the hot delta LRU. |
+| `updater_hot_delta_cache_entries` | gauge | — | Hot delta LRU occupancy. |
+| `updater_target_binary_size_bytes` | gauge | — | Size of the currently active target. |
+| `updater_target_in_memory` | gauge | — | 0/1: whether the target fits under `target_max_memory_mb`. |
+| `updater_admin_requests_total` | counter | `endpoint`, `code` | `code` collapses to `2xx`/`3xx`/`4xx`/`5xx` plus explicit `Unauthorized`/`Forbidden`/`Too Many Requests`. |
+| `updater_admin_rate_limited_total` | counter | — | 429s emitted by the admin token-bucket. Non-zero on steady state = someone hammering. |
+| `updater_signature_failures_total` | counter | — | Manifest sign errors. Should stay at 0. |
+
+### `/debug/pprof`
+
+`pprof_enabled: true` adds `/debug/pprof/{profile,heap,goroutine,...}`:
+
+```sh
+go tool pprof -http=: http://127.0.0.1:9100/debug/pprof/profile?seconds=30
+go tool pprof -http=: http://127.0.0.1:9100/debug/pprof/heap
+curl http://127.0.0.1:9100/debug/pprof/goroutine?debug=2
+```
+
+Leave it off in production. Tactical tool, not permanent infrastructure.
+
+### Disk-space warning at startup
+
+Both server and agent log a WARN at startup if the filesystem holding
+their state is below either threshold (percentage OR absolute MB). The
+server checks `binaries_dir` and `deltas_dir`; the agent checks
+`slots_dir`. Defaults 10% / 100 MiB. `0` on either disables that check.
+
+Server YAML:
+```yaml
+store:
+  disk_space_min_free_pct: 10
+  disk_space_min_free_mb: 100
+```
+
+Agent YAML:
+```yaml
+device:
+  disk_space_min_free_pct: 10
+  disk_space_min_free_mb: 100
+```
+
+Purely observational — the service boots regardless. The warning lands
+in the same log stream with `op=disk_space`.
+
+---
+
 ## Memory bounds (server, 24/7 operation)
 
 The update-server is designed for **strictly bounded RAM** regardless of

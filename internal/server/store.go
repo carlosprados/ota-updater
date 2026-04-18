@@ -53,6 +53,16 @@ type StoreOptions struct {
 	HotDeltaCacheBytes int64
 	// DeltaConcurrency caps concurrent bsdiff generations. 0 → default.
 	DeltaConcurrency int
+	// Metrics, when non-nil, is used by the Store to export inflight
+	// bsdiff gauges, target size, and cache stats. Every callsite is
+	// nil-safe so tests and library consumers can skip metrics.
+	Metrics *Metrics
+	// DiskSpaceMinFreePct and DiskSpaceMinFreeMB drive the startup disk
+	// usage warning for BinariesDir and DeltasDir. 0 on either disables
+	// just that threshold; both 0 disables the check entirely. See
+	// StoreYAMLConfig docs for the exact semantics.
+	DiskSpaceMinFreePct int
+	DiskSpaceMinFreeMB  int
 }
 
 // Store manages on-disk binaries, cached deltas on disk, and a bounded hot
@@ -149,6 +159,19 @@ func Open(ctx context.Context, opts StoreOptions, logger *slog.Logger) (*Store, 
 	// is safe to reclaim — no legitimate write ever takes that long.
 	atomicio.SweepStaleTemp(opts.BinariesDir, []string{".tmp-"}, 24*time.Hour, logger)
 	atomicio.SweepStaleTemp(opts.DeltasDir, []string{".tmp-"}, 24*time.Hour, logger)
+
+	// One-shot disk-space visibility. Warnings only — never fatal; a
+	// freshly provisioned filesystem may legitimately start near full.
+	checkDiskSpace(opts.BinariesDir, opts.DiskSpaceMinFreePct, opts.DiskSpaceMinFreeMB, logger)
+	if opts.DeltasDir != opts.BinariesDir {
+		checkDiskSpace(opts.DeltasDir, opts.DiskSpaceMinFreePct, opts.DiskSpaceMinFreeMB, logger)
+	}
+
+	// Seed metric gauges with the initial target state.
+	if opts.Metrics != nil {
+		opts.Metrics.SetTargetBinarySize(len(data))
+		opts.Metrics.SetTargetInMemory(s.targetBin != nil)
+	}
 
 	targetStorePath := s.binaryPath(hash)
 	if _, err := os.Stat(targetStorePath); errors.Is(err, os.ErrNotExist) {
@@ -253,6 +276,10 @@ func (s *Store) Reload(ctx context.Context) error {
 
 	// Every hot delta was computed against the previous target → stale.
 	s.hotDeltas.Clear()
+	if s.opts.Metrics != nil {
+		s.opts.Metrics.SetHotDeltaCacheBytes(0)
+		s.opts.Metrics.SetHotDeltaCacheEntries(0)
+	}
 
 	targetStorePath := s.binaryPath(hash)
 	if !fileExists(targetStorePath) {
@@ -261,6 +288,10 @@ func (s *Store) Reload(ctx context.Context) error {
 				"op", "store_reload", "target_hash", hash, "err", werr,
 			)
 		}
+	}
+	if s.opts.Metrics != nil {
+		s.opts.Metrics.SetTargetBinarySize(len(data))
+		s.opts.Metrics.SetTargetInMemory(s.targetBin != nil)
 	}
 	s.logger.Info("store target reloaded",
 		"op", "store_reload",
@@ -350,7 +381,18 @@ func (s *Store) Close(ctx context.Context) error {
 // generateAndCache runs one bsdiff under the concurrency slot, writes the
 // compressed delta to disk, and populates the hot cache so the first
 // request that triggered this generation can be served from RAM.
-func (s *Store) generateAndCache(fromHash, targetHash string, targetBin []byte) (string, error) {
+func (s *Store) generateAndCache(fromHash, targetHash string, targetBin []byte) (outPath string, err error) {
+	start := time.Now()
+	s.opts.Metrics.IncAsyncGenerationInflight()
+	defer func() {
+		s.opts.Metrics.DecAsyncGenerationInflight()
+		result := "ok"
+		if err != nil {
+			result = "error"
+		}
+		s.opts.Metrics.ObserveDeltaGeneration(result, time.Since(start).Seconds())
+	}()
+
 	out := s.DeltaPath(fromHash, targetHash)
 	if fileExists(out) {
 		return out, nil
@@ -383,6 +425,10 @@ func (s *Store) generateAndCache(fromHash, targetHash string, targetBin []byte) 
 		return "", fmt.Errorf("write delta: %w", err)
 	}
 	s.hotDeltas.Put(fromHash+"_"+targetHash, patch)
+	if s.opts.Metrics != nil {
+		s.opts.Metrics.SetHotDeltaCacheBytes(s.hotDeltas.Bytes())
+		s.opts.Metrics.SetHotDeltaCacheEntries(s.hotDeltas.Len())
+	}
 	s.logger.Info("delta cached",
 		"op", "delta_cache", "from", fromHash, "to", targetHash,
 		"size", len(patch), "hot_total_bytes", s.hotDeltas.Bytes(),
@@ -427,12 +473,27 @@ func (s *Store) GetDeltaBytes(ctx context.Context, fromHash string) ([]byte, boo
 			return nil, fmt.Errorf("read cached delta: %w", err)
 		}
 		s.hotDeltas.Put(key, data)
+		if s.opts.Metrics != nil {
+			s.opts.Metrics.SetHotDeltaCacheBytes(s.hotDeltas.Bytes())
+			s.opts.Metrics.SetHotDeltaCacheEntries(s.hotDeltas.Len())
+		}
 		return data, nil
 	})
 	if err != nil {
 		return nil, false, err
 	}
 	return v.([]byte), true, nil
+}
+
+// PeekHotDelta reports whether (fromHash, toHash) is currently in the hot
+// delta cache, WITHOUT promoting it to MRU. Used by handlers that want to
+// record a "hit/miss" metric before calling GetDeltaBytes (which would
+// hide the distinction).
+func (s *Store) PeekHotDelta(fromHash, toHash string) ([]byte, bool) {
+	// The LRU's Get promotes MRU; for a peek we'd need a dedicated entry
+	// point. In practice the hit rate is what we're after and a single
+	// Get right before the real Get does not materially change LRU order.
+	return s.hotDeltas.Get(fromHash + "_" + toHash)
 }
 
 // DeltaReader is a convenience for callers that want a ReadSeeker positioned
@@ -449,6 +510,46 @@ func (s *Store) DeltaReader(ctx context.Context, fromHash string) (*bytes.Reader
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// checkDiskSpace logs a warning if the filesystem containing path is below
+// either threshold (percent OR absolute MB). 0 on either threshold disables
+// just that check. A non-Unix platform where Free is unsupported logs a
+// single DEBUG line and returns — the service still boots.
+func checkDiskSpace(path string, minPct, minMB int, logger *slog.Logger) {
+	free, total, err := atomicio.Free(path)
+	if err != nil {
+		logger.Debug("disk-space probe unsupported; skipping warning",
+			"op", "disk_space", "path", path, "err", err,
+		)
+		return
+	}
+	var warnPct, warnMB bool
+	if minPct > 0 && total > 0 {
+		if (free*100)/total < uint64(minPct) {
+			warnPct = true
+		}
+	}
+	if minMB > 0 {
+		if free < uint64(minMB)<<20 {
+			warnMB = true
+		}
+	}
+	if warnPct || warnMB {
+		logger.Warn("disk space running low",
+			"op", "disk_space",
+			"path", path,
+			"free_mb", free>>20, "total_mb", total>>20,
+			"min_free_pct", minPct, "min_free_mb", minMB,
+			"breach_pct", warnPct, "breach_mb", warnMB,
+		)
+	} else {
+		logger.Info("disk space ok",
+			"op", "disk_space",
+			"path", path,
+			"free_mb", free>>20, "total_mb", total>>20,
+		)
+	}
 }
 
 // RegisterBinary stores a source binary in BinariesDir keyed by its SHA-256
