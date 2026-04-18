@@ -11,14 +11,15 @@ import (
 
 // Config is the top-level YAML config consumed by cmd/update-server.
 type Config struct {
-	HTTP     HTTPYAMLConfig    `yaml:"http"`
-	CoAP     CoAPYAMLConfig    `yaml:"coap"`
-	Store    StoreYAMLConfig   `yaml:"store"`
-	Crypto   CryptoYAMLConfig  `yaml:"crypto"`
-	Target   TargetYAMLConfig  `yaml:"target"`
-	Admin    AdminYAMLConfig   `yaml:"admin"`
-	Logging  LoggingConfig     `yaml:"logging"`
+	HTTP     HTTPYAMLConfig     `yaml:"http"`
+	CoAP     CoAPYAMLConfig     `yaml:"coap"`
+	Store    StoreYAMLConfig    `yaml:"store"`
+	Crypto   CryptoYAMLConfig   `yaml:"crypto"`
+	Target   TargetYAMLConfig   `yaml:"target"`
+	Admin    AdminYAMLConfig    `yaml:"admin"`
+	Logging  LoggingConfig      `yaml:"logging"`
 	Manifest ManifestYAMLConfig `yaml:"manifest"`
+	Metrics  MetricsYAMLConfig  `yaml:"metrics"`
 }
 
 type HTTPYAMLConfig struct {
@@ -40,6 +41,24 @@ type StoreYAMLConfig struct {
 	TargetMaxMemoryMB int    `yaml:"target_max_memory_mb"` // cap on keeping the active target in RAM
 	HotDeltaCacheMB   int    `yaml:"hot_delta_cache_mb"`   // byte budget of the hot delta LRU
 	DeltaConcurrency  int    `yaml:"delta_concurrency"`    // max concurrent bsdiff runs
+	// DiskSpaceMinFreePct raises a startup warning when the filesystem
+	// containing BinariesDir/DeltasDir has less than this percentage of
+	// free space. 0 disables the check. Default 10.
+	DiskSpaceMinFreePct int `yaml:"disk_space_min_free_pct"`
+	// DiskSpaceMinFreeMB is the absolute-bytes equivalent; the warning
+	// fires when EITHER the percent OR the MB threshold is breached.
+	// Default 100 MiB.
+	DiskSpaceMinFreeMB int `yaml:"disk_space_min_free_mb"`
+}
+
+// MetricsYAMLConfig toggles the separate observability HTTP listener. When
+// Addr is empty the listener is not started and no metrics nor pprof are
+// exposed. The listener is expected to be bound to a loopback or
+// private-net address — /metrics has no auth and /debug/pprof exposes
+// process internals.
+type MetricsYAMLConfig struct {
+	Addr         string `yaml:"addr"`          // e.g. "127.0.0.1:9100"; "" disables.
+	PprofEnabled bool   `yaml:"pprof_enabled"` // mount /debug/pprof/* on the observability listener
 }
 
 type CryptoYAMLConfig struct {
@@ -151,6 +170,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Admin.RateLimitBurst == 0 {
 		c.Admin.RateLimitBurst = 20
+	}
+	if c.Store.DiskSpaceMinFreePct == 0 {
+		c.Store.DiskSpaceMinFreePct = 10
+	}
+	if c.Store.DiskSpaceMinFreeMB == 0 {
+		c.Store.DiskSpaceMinFreeMB = 100
 	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"

@@ -90,6 +90,11 @@ type UpdaterConfig struct {
 	// UnknownVersionPolicy decides what to do when TargetVersion isn't valid
 	// semver (resolved from UpdateConfig.UnknownVersionPolicy).
 	UnknownVersionPolicy UnknownVersionPolicy
+	// DiskSpaceMinFreePct and DiskSpaceMinFreeMB drive a startup warning
+	// on the filesystem containing StateDir. 0 on either disables just
+	// that threshold.
+	DiskSpaceMinFreePct int
+	DiskSpaceMinFreeMB  int
 }
 
 // UpdaterDeps groups the collaborators the Updater needs. Construct each
@@ -197,6 +202,11 @@ func NewUpdater(deps UpdaterDeps) (*Updater, error) {
 	atomicio.SweepStaleTemp(cfg.StateDir,
 		[]string{".tmp-", stagingDeltaFile + ".partial", stagingDeltaFile + "."},
 		orphanSweepMaxAge, logger)
+
+	// One-shot disk-space visibility for the StateDir. Warning only — an
+	// agent that boots with a nearly-full device should flag the operator
+	// but continue (updates may still arrive and succeed if the delta fits).
+	checkAgentDiskSpace(cfg.StateDir, cfg.DiskSpaceMinFreePct, cfg.DiskSpaceMinFreeMB, logger)
 
 	return &Updater{
 		cfg:           cfg,
@@ -716,6 +726,44 @@ func (u *Updater) clearPending() {
 func sha256HexBytes(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// checkAgentDiskSpace logs a warning if StateDir's filesystem is below
+// either threshold. 0 on either threshold disables just that check. On
+// non-Unix or unsupported filesystems (e.g. overlayfs variants with no
+// Statfs) the helper degrades to a DEBUG line.
+func checkAgentDiskSpace(dir string, minPct, minMB int, logger *slog.Logger) {
+	free, total, err := atomicio.Free(dir)
+	if err != nil {
+		logger.Debug("disk-space probe unsupported; skipping warning",
+			"op", "disk_space", "path", dir, "err", err,
+		)
+		return
+	}
+	var warnPct, warnMB bool
+	if minPct > 0 && total > 0 {
+		if (free*100)/total < uint64(minPct) {
+			warnPct = true
+		}
+	}
+	if minMB > 0 && free < uint64(minMB)<<20 {
+		warnMB = true
+	}
+	if warnPct || warnMB {
+		logger.Warn("disk space running low on agent StateDir",
+			"op", "disk_space",
+			"path", dir,
+			"free_mb", free>>20, "total_mb", total>>20,
+			"min_free_pct", minPct, "min_free_mb", minMB,
+			"breach_pct", warnPct, "breach_mb", warnMB,
+		)
+	} else {
+		logger.Info("disk space ok",
+			"op", "disk_space",
+			"path", dir,
+			"free_mb", free>>20, "total_mb", total>>20,
+		)
+	}
 }
 
 // defaultHWInfo returns just GOARCH/GOOS. Library consumers that want to
