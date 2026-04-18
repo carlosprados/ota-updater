@@ -1,0 +1,80 @@
+version: '3'
+
+vars:
+  BIN_DIR: '{{.ROOT_DIR}}/bin'
+  KEYS_DIR: '{{.ROOT_DIR}}/keys'
+  LDFLAGS: '-s -w'
+  # AGENT_VERSION: semver injected into cmd/edge-agent at build time.
+  # Falls back to `0.0.0-dev` when `git describe` can't find a tag.
+  AGENT_VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  build:
+    desc: Build both binaries (static, CGO_ENABLED=0)
+    deps: [build-server, build-agent]
+
+  build-agent:
+    desc: Build the edge-agent binary (static, semver injected via ldflags)
+    cmds:
+      - CGO_ENABLED=0 go build -ldflags="{{.LDFLAGS}} -X main.version={{.AGENT_VERSION}}" -o {{.BIN_DIR}}/edge-agent ./cmd/edge-agent
+    generates:
+      - '{{.BIN_DIR}}/edge-agent'
+
+  build-server:
+    desc: Build the update-server binary (static)
+    cmds:
+      - CGO_ENABLED=0 go build -ldflags="{{.LDFLAGS}}" -o {{.BIN_DIR}}/update-server ./cmd/update-server
+    generates:
+      - '{{.BIN_DIR}}/update-server'
+
+  keygen:
+    desc: Generate Ed25519 keypair (server.key + agent.pub) into ./keys
+    cmds:
+      - go run ./tools/keygen -out {{.KEYS_DIR}}
+
+  test:
+    desc: Run the full test suite with race detector (excludes integration tag)
+    cmds:
+      - go test ./... -race -count=1
+
+  test-integration:
+    desc: Run end-to-end integration tests (requires the `integration` build tag)
+    cmds:
+      - go test -tags integration ./integration/... -race -count=1 -v
+
+  vet:
+    desc: Run go vet on all packages
+    cmds:
+      - go vet ./...
+
+  tidy:
+    desc: Run go mod tidy
+    cmds:
+      - go mod tidy
+
+  check:
+    desc: Quick local check (vet + full build, no tests)
+    cmds:
+      - go vet ./...
+      - go build ./...
+
+  ci:
+    desc: Full local CI - vet, test, build both binaries
+    cmds:
+      - task: vet
+      - task: test
+      - task: build-server
+      - task: build-agent
+
+  clean:
+    desc: Remove build artifacts and cached deltas
+    cmds:
+      - rm -rf {{.BIN_DIR}}
+      - rm -rf {{.ROOT_DIR}}/store/deltas
