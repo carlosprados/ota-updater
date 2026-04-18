@@ -101,11 +101,13 @@ func run(cfgPath string) error {
 	// HTTP: main API + admin under the same listener.
 	rootMux := http.NewServeMux()
 	server.RegisterAdminHandlers(rootMux, server.AdminDeps{
-		Token:      cfg.Admin.Token,
-		Store:      store,
-		Manifester: manifester,
-		Logging:    logging,
-		Logger:     logger,
+		Token:           cfg.Admin.Token,
+		Store:           store,
+		Manifester:      manifester,
+		Logging:         logging,
+		Logger:          logger,
+		RateLimitPerSec: cfg.Admin.RateLimitPerSec,
+		RateLimitBurst:  cfg.Admin.RateLimitBurst,
 	})
 	apiHandler := server.NewHTTPHandler(server.HTTPConfig{
 		Store: store, Manifester: manifester, Logger: logger,

@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -124,12 +125,17 @@ func run(cfgPath string) error {
 	if cfg.Update.AutoUpdate != nil {
 		autoUpdate = *cfg.Update.AutoUpdate
 	}
+	jitter := 0.3
+	if cfg.Update.Jitter != nil {
+		jitter = *cfg.Update.Jitter
+	}
 
 	updater, err := agent.NewUpdater(agent.UpdaterDeps{
 		Config: agent.UpdaterConfig{
 			DeviceID:             cfg.Device.ID,
 			Version:              version,
 			CheckInterval:        cfg.Update.CheckInterval,
+			Jitter:               jitter,
 			MaxRetries:           cfg.Update.MaxRetries,
 			RetryBackoff:         cfg.Update.RetryBackoff,
 			StateDir:             cfg.Device.SlotsDir,
@@ -178,11 +184,30 @@ func run(cfgPath string) error {
 // from the agent config. The pair selection mirrors the policy decided in
 // CLAUDE.md: when fallback is enabled, the *other* transport is tried once
 // per cycle on failure (the Updater enforces "no sticky").
-func buildPairs(cfg *agent.Config) (agent.ClientPair, *agent.ClientPair, error) {
-	httpClient := &http.Client{
-		// No client-wide timeout: per-request timeouts come from the Updater's
-		// context, which itself respects WatchdogTimeout / CheckInterval.
+// newHTTPClient returns an http.Client tuned for NB-IoT: generous dial and
+// TLS handshake budgets (the link is slow, not broken), a modest idle-conn
+// pool to allow keep-alive, and NO client-wide Timeout — per-request
+// deadlines come from the Updater's ctx so one slow download doesn't eat
+// future cycles. Values picked to tolerate worst-case radio wake-ups
+// without disguising genuine network failures behind infinite retries.
+func newHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 60 * time.Second,
+			}).DialContext,
+			MaxIdleConns:          2,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   30 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
 	}
+}
+
+func buildPairs(cfg *agent.Config) (agent.ClientPair, *agent.ClientPair, error) {
+	httpClient := newHTTPClient()
 	httpPair, errHTTP := agent.NewClientPair(
 		agent.NewHTTPClient(cfg.Server.HTTPURL, httpClient),
 		agent.NewHTTPTransport(httpClient),

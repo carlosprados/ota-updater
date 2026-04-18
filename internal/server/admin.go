@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"golang.org/x/time/rate"
 )
 
 // AdminDeps is the set of dependencies needed by the /admin/* endpoints.
@@ -15,6 +17,15 @@ type AdminDeps struct {
 	Manifester *Manifester // Invalidate() cache after reload
 	Logging    *Logging    // SetLevel() for /admin/loglevel
 	Logger     *slog.Logger
+
+	// RateLimitPerSec is the refill rate of the token bucket that throttles
+	// authentication FAILURES (401s). Legitimate requests with a correct
+	// token are never counted. 0 disables the limiter entirely.
+	RateLimitPerSec float64
+	// RateLimitBurst is the bucket size at steady state. Combined with
+	// RateLimitPerSec it caps the 401 request rate before the middleware
+	// starts returning 429 Too Many Requests.
+	RateLimitBurst int
 }
 
 // RegisterAdminHandlers adds:
@@ -29,7 +40,11 @@ func RegisterAdminHandlers(mux *http.ServeMux, d AdminDeps) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	auth := bearerTokenMiddleware(d.Token, logger)
+	var limiter *rate.Limiter
+	if d.RateLimitPerSec > 0 && d.RateLimitBurst > 0 {
+		limiter = rate.NewLimiter(rate.Limit(d.RateLimitPerSec), d.RateLimitBurst)
+	}
+	auth := bearerTokenMiddleware(d.Token, limiter, logger)
 
 	mux.Handle("POST /admin/reload", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oldHash := d.Store.TargetHash()
@@ -81,14 +96,24 @@ func RegisterAdminHandlers(mux *http.ServeMux, d AdminDeps) {
 }
 
 // bearerTokenMiddleware enforces Authorization: Bearer <token>. The token
-// comparison is constant-time to prevent timing side channels.
-func bearerTokenMiddleware(token string, logger *slog.Logger) func(http.Handler) http.Handler {
+// comparison is constant-time to prevent timing side channels. Requests
+// that would result in 401 (missing/wrong token) consume a token from
+// the provided rate limiter; when the bucket is empty, 429 is returned
+// with Retry-After: 1 instead. Legitimate requests with the correct
+// token never touch the limiter — CI/CD tooling that calls /admin/reload
+// hundreds of times in a row never sees a 429.
+func bearerTokenMiddleware(token string, limiter *rate.Limiter, logger *slog.Logger) func(http.Handler) http.Handler {
 	want := []byte(token)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := r.Header.Get("Authorization")
 			const prefix = "Bearer "
 			if !strings.HasPrefix(auth, prefix) {
+				if !allow(limiter) {
+					w.Header().Set("Retry-After", "1")
+					http.Error(w, "too many requests", http.StatusTooManyRequests)
+					return
+				}
 				logger.Warn("admin auth missing bearer",
 					"op", "admin_auth", "path", r.URL.Path, "remote", r.RemoteAddr)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -96,6 +121,11 @@ func bearerTokenMiddleware(token string, logger *slog.Logger) func(http.Handler)
 			}
 			got := []byte(auth[len(prefix):])
 			if subtle.ConstantTimeCompare(got, want) != 1 {
+				if !allow(limiter) {
+					w.Header().Set("Retry-After", "1")
+					http.Error(w, "too many requests", http.StatusTooManyRequests)
+					return
+				}
 				logger.Warn("admin auth failed",
 					"op", "admin_auth", "path", r.URL.Path, "remote", r.RemoteAddr)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -104,4 +134,13 @@ func bearerTokenMiddleware(token string, logger *slog.Logger) func(http.Handler)
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// allow consumes one token from the limiter. A nil limiter always allows
+// (rate limiting disabled).
+func allow(l *rate.Limiter) bool {
+	if l == nil {
+		return true
+	}
+	return l.Allow()
 }

@@ -53,7 +53,7 @@ func (c *HTTPClient) Heartbeat(ctx context.Context, hb *protocol.Heartbeat) (*pr
 	if err != nil {
 		return nil, fmt.Errorf("http heartbeat: do: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 	if resp.StatusCode/100 != 2 {
 		// Drain a small amount for diagnostics, then surface the status.
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
@@ -64,6 +64,18 @@ func (c *HTTPClient) Heartbeat(ctx context.Context, hb *protocol.Heartbeat) (*pr
 		return nil, fmt.Errorf("http heartbeat: decode: %w", err)
 	}
 	return &out, nil
+}
+
+// drainAndClose consumes any remaining response body bytes before closing,
+// so net/http can return the underlying connection to the idle pool for
+// reuse. Without draining, keep-alive is effectively disabled — the client
+// opens a new TCP connection every request. Matters over NB-IoT where
+// handshake latency is seconds.
+func drainAndClose(body io.ReadCloser) {
+	// Cap at 64 KiB so a malicious or misbehaving server cannot block us
+	// draining gigabytes. Legitimate responses we care about are tiny.
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, 64<<10))
+	body.Close()
 }
 
 // Report implements ProtocolClient. POSTs JSON, ignores response body.
@@ -85,11 +97,10 @@ func (c *HTTPClient) Report(ctx context.Context, rep *protocol.UpdateReport) err
 	if err != nil {
 		return fmt.Errorf("http report: do: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("http report: status %s", resp.Status)
 	}
-	io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
