@@ -1,13 +1,17 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -143,3 +147,95 @@ func TestAdmin_Reload_InvalidatesCache(t *testing.T) {
 	}
 }
 
+
+func TestAdminRateLimit_429AfterBurst(t *testing.T) {
+	// Wire admin with a tiny bucket: 0 refill, burst=3. Once 3 failing
+	// requests land, the 4th must return 429.
+	token := "the-correct-admin-token-of-32-chars"
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mux := http.NewServeMux()
+	RegisterAdminHandlers(mux, AdminDeps{
+		Token:           token,
+		Logger:          logger,
+		RateLimitPerSec: 0.001, // effectively no refill within the test window
+		RateLimitBurst:  3,
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	send := func(auth string) int {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/admin/reload", nil)
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// First 3 wrong-token requests return 401 (burst still has tokens).
+	for i := 0; i < 3; i++ {
+		if got := send("Bearer wrong"); got != 401 {
+			t.Fatalf("req %d wrong token: got %d, want 401", i, got)
+		}
+	}
+	// 4th request exhausts the bucket → 429.
+	if got := send("Bearer wrong"); got != 429 {
+		t.Fatalf("req 4 expected 429 (rate-limited), got %d", got)
+	}
+}
+
+func TestAdminRateLimit_SuccessfulRequestsNeverCounted(t *testing.T) {
+	// With burst=1, if we use the CORRECT token repeatedly, we never hit
+	// 429. The limiter only runs on 401-path.
+	token := "a-strong-enough-token-of-32-chars"
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mux := http.NewServeMux()
+
+	// We need a Store+Manifester for reload to succeed; minimal fixture:
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "binaries")
+	deltaDir := filepath.Join(tmp, "deltas")
+	target := filepath.Join(tmp, "target.bin")
+	if err := os.WriteFile(target, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(context.Background(), StoreOptions{
+		BinariesDir: binDir, DeltasDir: deltaDir, TargetPath: target,
+	}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, 32))
+	_ = pub
+	mfr := NewManifester(store, priv, ManifesterConfig{}, logger)
+
+	RegisterAdminHandlers(mux, AdminDeps{
+		Token:           token,
+		Store:           store,
+		Manifester:      mfr,
+		Logger:          logger,
+		RateLimitPerSec: 0.001,
+		RateLimitBurst:  1,
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	for i := 0; i < 10; i++ {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/admin/reload", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("req %d: got %d, want 200 (legitimate requests never throttle)",
+				i, resp.StatusCode)
+		}
+	}
+}

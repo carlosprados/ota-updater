@@ -127,10 +127,19 @@ func (d *Downloader) Download(ctx context.Context, tgt FetchTarget) error {
 			offset = 0
 		}
 
-		d.logger.Warn("download attempt failed",
-			"op", "download", "attempt", attempt+1, "transport", d.transport.Name(),
-			"offset", offset, "err", err,
-		)
+		diskFull := atomicio.IsDiskFull(err)
+		if diskFull {
+			d.logger.Error("download attempt failed: disk full",
+				"op", "download", "attempt", attempt+1, "transport", d.transport.Name(),
+				"offset", offset, "err", err,
+				"remedy", "operator must free space in StateDir",
+			)
+		} else {
+			d.logger.Warn("download attempt failed",
+				"op", "download", "attempt", attempt+1, "transport", d.transport.Name(),
+				"offset", offset, "err", err,
+			)
+		}
 		d.saveState(tgt, tmpPath, offset)
 
 		if attempt == d.cfg.MaxRetries {
@@ -138,6 +147,12 @@ func (d *Downloader) Download(ctx context.Context, tgt FetchTarget) error {
 		}
 
 		wait := jitter(backoff, d.rand)
+		// ENOSPC: no point retrying quickly — the disk condition is
+		// static until an operator frees space. Force at least 5 min
+		// between attempts so the retry budget isn't burnt in seconds.
+		if diskFull && wait < 5*time.Minute {
+			wait = 5 * time.Minute
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

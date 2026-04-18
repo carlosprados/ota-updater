@@ -25,6 +25,7 @@ device:
 
 update:
   check_interval: "1h"                           # heartbeat cadence
+  jitter: 0.3                                    # ±30% variance per cycle; 0 disables
   chunk_size: 4096                               # bytes per download chunk
   max_retries: 10
   retry_backoff: "30s"

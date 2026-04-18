@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func discardLogger() *slog.Logger {
@@ -232,3 +233,61 @@ var (
 	_ = ReplaceSymlink
 	_ fs.FileMode
 )
+
+func TestSweepStaleTemp_OnlyOldMatches(t *testing.T) {
+	dir := t.TempDir()
+	// Three candidates: old tmp, fresh tmp, non-matching file.
+	oldTmp := filepath.Join(dir, ".tmp-old")
+	freshTmp := filepath.Join(dir, ".tmp-fresh")
+	keep := filepath.Join(dir, "real-file")
+	oldPartial := filepath.Join(dir, "download.partial")
+	for _, p := range []string{oldTmp, freshTmp, keep, oldPartial} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Backdate the "old" files 48h.
+	old := time.Now().Add(-48 * time.Hour)
+	for _, p := range []string{oldTmp, oldPartial} {
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, failed := SweepStaleTemp(
+		dir,
+		[]string{".tmp-", "download."},
+		24*time.Hour,
+		discardLogger(),
+	)
+	if removed != 2 || failed != 0 {
+		t.Fatalf("SweepStaleTemp removed=%d failed=%d, want 2/0", removed, failed)
+	}
+	// Fresh tmp must survive (prefix match but age below threshold).
+	if _, err := os.Stat(freshTmp); err != nil {
+		t.Fatalf("fresh tmp should survive: %v", err)
+	}
+	// Non-matching file must survive regardless of age.
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("non-matching file should survive: %v", err)
+	}
+	// Old matching files removed.
+	if _, err := os.Stat(oldTmp); !os.IsNotExist(err) {
+		t.Fatalf("old tmp should have been removed; stat err = %v", err)
+	}
+	if _, err := os.Stat(oldPartial); !os.IsNotExist(err) {
+		t.Fatalf("old .partial should have been removed; stat err = %v", err)
+	}
+}
+
+func TestSweepStaleTemp_MissingDirIsSilent(t *testing.T) {
+	removed, failed := SweepStaleTemp(
+		"/nonexistent/path",
+		[]string{".tmp-"},
+		time.Hour,
+		discardLogger(),
+	)
+	if removed != 0 || failed != 0 {
+		t.Fatalf("missing dir should be a quiet no-op, got removed=%d failed=%d", removed, failed)
+	}
+}

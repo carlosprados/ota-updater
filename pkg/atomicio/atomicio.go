@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // WriteFile writes data to path atomically and durably. It returns on
@@ -170,4 +171,74 @@ func loggerOrDefault(l *slog.Logger) *slog.Logger {
 		return l
 	}
 	return slog.Default()
+}
+
+// SweepStaleTemp removes files in dir whose basename matches any of the
+// given prefixes AND whose modification time is older than maxAge. Returns
+// the count removed and the count that failed. Errors listing dir or
+// stating files are logged (warn) and the sweep continues.
+//
+// Use at startup to clean up temp files left by a prior crashed process:
+// atomic writes create "<tmp>" next to the destination, rename over it,
+// then fsync. A process kill between create and rename leaves the tmp
+// behind. The rename path ("dest") is always safe to keep; only the
+// "<tmp>" files are candidates for sweeping.
+//
+// Default safety: maxAge should be well above any legitimate in-flight
+// write duration (24h is recommended) so a sweep running during a fresh
+// bootstrap cannot clobber a concurrent operation.
+func SweepStaleTemp(dir string, prefixes []string, maxAge time.Duration, logger *slog.Logger) (removed, failed int) {
+	log := loggerOrDefault(logger)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		log.Warn("atomicio: sweep: read dir",
+			"op", "atomicio_sweep", "dir", dir, "err", err,
+		)
+		return 0, 0
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !hasAnyPrefix(name, prefixes) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		info, err := entry.Info()
+		if err != nil {
+			log.Warn("atomicio: sweep: stat", "path", path, "err", err)
+			continue
+		}
+		if info.IsDir() || info.ModTime().After(cutoff) {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			failed++
+			log.Warn("atomicio: sweep: remove", "path", path, "err", err)
+			continue
+		}
+		removed++
+		log.Info("atomicio: swept stale temp",
+			"op", "atomicio_sweep", "path", path, "age", time.Since(info.ModTime()),
+		)
+	}
+	return removed, failed
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if len(s) >= len(p) && s[:len(p)] == p {
+			return true
+		}
+	}
+	return false
+}
+
+// IsDiskFull reports whether err (or any of its wrapped errors) is a
+// syscall.ENOSPC "no space left on device". Cross-platform: on non-Unix
+// targets this returns false because syscall.ENOSPC is undefined there.
+// Callers should use it to distinguish "transient network hiccup" from
+// "operator must free disk" so retry budgets don't get burned on an
+// unrecoverable condition.
+func IsDiskFull(err error) bool {
+	return isDiskFull(err)
 }

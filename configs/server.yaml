@@ -7,7 +7,13 @@ http:
   addr: ":8080"
   read_header_timeout: "5s"
   read_timeout: "30s"
-  write_timeout: "60s"
+  # write_timeout applies to the WHOLE response (bytes sent to the client),
+  # not per chunk. NB-IoT devices download delta payloads at ~20 kbps; a
+  # 1 MiB delta takes ~7 minutes, a 2 MiB delta ~13 minutes. Setting this
+  # below the actual transfer time cuts connections mid-stream — the agent
+  # recovers with Range but the latency cost compounds. Default 10m fits
+  # deltas up to ~1.5 MiB at 20 kbps; raise if your fleet ships larger.
+  write_timeout: "10m"
   idle_timeout: "2m"
   shutdown_timeout: "15s"
 
@@ -52,6 +58,13 @@ admin:
   # Keep this secret. Run the admin endpoints on a private network / loopback
   # only — there is no rate limit on the middleware yet.
   token: "change-me-openssl-rand-hex-16-here"
+  # Token-bucket rate limit applied ONLY to authentication failures (401).
+  # A legitimate client with the correct token never sees 429 no matter how
+  # many times it hits /admin/*. An attacker flooding wrong tokens sees 429
+  # after burst failures and has to wait for refill. Set rate_limit_per_sec
+  # to 0 to disable (not recommended in production).
+  rate_limit_per_sec: 5
+  rate_limit_burst: 20
 
 logging:
   level: "info"                    # debug | info | warn | error

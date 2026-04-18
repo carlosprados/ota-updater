@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/singleflight"
 
@@ -141,6 +142,13 @@ func Open(ctx context.Context, opts StoreOptions, logger *slog.Logger) (*Store, 
 		deltaSlots: make(chan struct{}, opts.DeltaConcurrency),
 	}
 	s.setTargetBin(data)
+
+	// Sweep stale temp files left behind by previous crashed writes.
+	// atomicio creates ".tmp-*" next to the destination; a SIGKILL between
+	// create and rename leaves the file on disk. Anything older than 24h
+	// is safe to reclaim — no legitimate write ever takes that long.
+	atomicio.SweepStaleTemp(opts.BinariesDir, []string{".tmp-"}, 24*time.Hour, logger)
+	atomicio.SweepStaleTemp(opts.DeltasDir, []string{".tmp-"}, 24*time.Hour, logger)
 
 	targetStorePath := s.binaryPath(hash)
 	if _, err := os.Stat(targetStorePath); errors.Is(err, os.ErrNotExist) {

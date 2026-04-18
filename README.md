@@ -111,8 +111,23 @@ openssl rand -base64 24     # 32 base64 chars
 
 The endpoints are intended for **internal networks or loopback**. Expose
 them only where you control who reaches them (reverse proxy + ACL, VPN,
-loopback-only bind). There is currently **no rate limit** on the
-middleware; rely on network-level access control.
+loopback-only bind).
+
+**Rate limit on auth failures**: a token-bucket throttles only 401
+responses (missing or wrong token). Legitimate requests with the correct
+token never touch the limiter — CI/CD pipelines that hit `/admin/reload`
+repeatedly are unaffected. Defaults in `server.yaml`:
+
+```yaml
+admin:
+  rate_limit_per_sec: 5      # refill rate for the failure bucket; 0 disables
+  rate_limit_burst: 20       # bucket size
+```
+
+When the bucket is exhausted, the server responds `429 Too Many Requests`
+with `Retry-After: 1` instead of the usual 401. A 32-char random token
+combined with 5/s of failures is infeasible to brute-force; the limiter
+is a belt-and-suspenders layer on top of network access control.
 
 ### `POST /admin/reload`
 
@@ -315,6 +330,29 @@ Customization points the API exposes by design:
 The companion packages — `pkg/protocol`, `pkg/crypto`, `pkg/delta`,
 `pkg/compression` — are also exported. Re-using them from another
 binary is supported.
+
+---
+
+## Update cadence jitter
+
+Every `RunOnce` cycle, the agent sleeps `CheckInterval ± (Jitter × CheckInterval)`
+before the next iteration. With the default `check_interval: 1h` and
+`jitter: 0.3`, each sleep is a uniform sample in `[42 min, 78 min]`. This
+matters for fleet behavior:
+
+| Scenario | Without jitter | With ±30% jitter |
+|---|---|---|
+| 5 000 devices deployed at 14:00 | 5 000 req/s every 15:00:00, 16:00:00 … | ≈2.3 req/s spread over a 36-min window |
+| Fleet-wide reboot after a brief outage | All agents re-synchronize, pattern repeats | Decays in 3–5 cycles |
+
+The jitter is **re-sampled every cycle**, so any accidental synchronization
+(fleet reboot, mass deployment) fades away naturally. It does NOT replace
+staggered rollouts on day zero (use deployment automation for that) nor
+rate limiting on the server (still pending), but it keeps steady-state
+traffic flat enough that a modest server handles a large fleet.
+
+Set `update.jitter: 0` to disable (lock-step cadence — **not recommended**
+past a handful of devices). Valid range `[0, 1]`.
 
 ---
 

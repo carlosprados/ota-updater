@@ -53,6 +53,14 @@ type TargetYAMLConfig struct {
 
 type AdminYAMLConfig struct {
 	Token string `yaml:"token"` // static Bearer token for /admin/* endpoints
+	// RateLimitPerSec is the refill rate of the token bucket that throttles
+	// authentication FAILURES only. 0 disables (not recommended in prod).
+	// Legitimate requests with the right token are never counted.
+	RateLimitPerSec float64 `yaml:"rate_limit_per_sec"`
+	// RateLimitBurst is the size of the token bucket. Combined with
+	// RateLimitPerSec, an attacker who floods with wrong tokens sees 429
+	// after this many 401s until tokens refill.
+	RateLimitBurst int `yaml:"rate_limit_burst"`
 }
 
 // adminTokenMinLen is the minimum accepted length for admin.token. Aimed at
@@ -103,7 +111,13 @@ func (c *Config) applyDefaults() {
 		c.HTTP.ReadTimeout = 30 * time.Second
 	}
 	if c.HTTP.WriteTimeout == 0 {
-		c.HTTP.WriteTimeout = 60 * time.Second
+		// NB-IoT math: a 2 MiB delta at 20 kbps takes ~13 minutes. A 60 s
+		// default would cut such downloads mid-stream, forcing the agent
+		// to reconnect and Range-resume — avoidable latency. 10 min
+		// covers deltas up to ~1.5 MiB comfortably at 20 kbps and the
+		// operator can raise it further if their fleet ships larger
+		// payloads. See README "Memory bounds" for the bsdiff tradeoffs.
+		c.HTTP.WriteTimeout = 10 * time.Minute
 	}
 	if c.HTTP.IdleTimeout == 0 {
 		c.HTTP.IdleTimeout = 120 * time.Second
@@ -131,6 +145,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Manifest.CacheSize == 0 {
 		c.Manifest.CacheSize = 4096
+	}
+	if c.Admin.RateLimitPerSec == 0 {
+		c.Admin.RateLimitPerSec = 5
+	}
+	if c.Admin.RateLimitBurst == 0 {
+		c.Admin.RateLimitBurst = 20
 	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +22,11 @@ import (
 	"github.com/amplia/ota-updater/pkg/delta"
 	"github.com/amplia/ota-updater/pkg/protocol"
 )
+
+// orphanSweepMaxAge is the threshold past which stray temp/partial files in
+// StateDir are considered abandoned by a prior crashed process. Well above
+// any legitimate download duration even on NB-IoT.
+const orphanSweepMaxAge = 24 * time.Hour
 
 // pendingUpdateFile is the basename of the marker file the Updater writes
 // just before swap+restart. Its presence on the next boot tells the Updater
@@ -60,6 +66,9 @@ type UpdaterConfig struct {
 	// CheckInterval is the cadence between RunOnce iterations in Run.
 	// Defaults to 1 hour.
 	CheckInterval time.Duration
+	// Jitter spreads each sleep by ±Jitter*CheckInterval to avoid fleet
+	// lock-step. Range [0..1]. 0 disables, 0.3 is the recommended default.
+	Jitter float64
 	// MaxRetries / RetryBackoff are forwarded to the per-download Downloader.
 	MaxRetries   int
 	RetryBackoff time.Duration
@@ -115,6 +124,7 @@ type Updater struct {
 	restart   RestartStrategy
 	logger    *slog.Logger
 	hwInfo    HWInfoFunc
+	rand      *rand.Rand // jittered sleep source, seeded at NewUpdater
 
 	pendingPath   string
 	deltaStaging  string
@@ -180,6 +190,14 @@ func NewUpdater(deps UpdaterDeps) (*Updater, error) {
 	if hw == nil {
 		hw = defaultHWInfo
 	}
+	// Sweep stale temp/partial files left over from a prior crash in the
+	// StateDir. Anything with a matching prefix older than 24h is reclaimed.
+	// Covers both atomicio's generic ".tmp-*" temps and the Downloader's
+	// per-target ".staging.delta.partial" leftovers.
+	atomicio.SweepStaleTemp(cfg.StateDir,
+		[]string{".tmp-", stagingDeltaFile + ".partial", stagingDeltaFile + "."},
+		orphanSweepMaxAge, logger)
+
 	return &Updater{
 		cfg:           cfg,
 		primary:       deps.Primary,
@@ -190,6 +208,7 @@ func NewUpdater(deps UpdaterDeps) (*Updater, error) {
 		restart:       deps.Restart,
 		logger:        logger,
 		hwInfo:        hw,
+		rand:          rand.New(rand.NewSource(time.Now().UnixNano())),
 		pendingPath:   filepath.Join(cfg.StateDir, pendingUpdateFile),
 		deltaStaging:  filepath.Join(cfg.StateDir, stagingDeltaFile),
 		downloadState: filepath.Join(cfg.StateDir, downloadStateFile),
@@ -217,9 +236,28 @@ func (u *Updater) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(u.cfg.CheckInterval):
+		case <-time.After(u.nextSleep()):
 		}
 	}
+}
+
+// nextSleep returns CheckInterval jittered by ±(Jitter*CheckInterval).
+// With Jitter=0 the sleep is exactly CheckInterval (lock-step). Typical
+// Jitter=0.3 yields a uniform sample in [0.7*CheckInterval, 1.3*CheckInterval].
+// The jitter is re-sampled every cycle so any transient synchronisation
+// between agents (e.g. after a fleet-wide outage) decays in a few cycles.
+func (u *Updater) nextSleep() time.Duration {
+	base := u.cfg.CheckInterval
+	if u.cfg.Jitter <= 0 {
+		return base
+	}
+	span := float64(base) * u.cfg.Jitter
+	delta := (u.rand.Float64()*2 - 1) * span // uniform [-span, +span]
+	d := time.Duration(float64(base) + delta)
+	if d <= 0 {
+		return base
+	}
+	return d
 }
 
 // BootPhase inspects .pending_update. If absent, the agent simply enters

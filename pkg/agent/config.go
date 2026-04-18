@@ -68,6 +68,13 @@ type DeviceConfig struct {
 // semver-based auto-update policy.
 type UpdateConfig struct {
 	CheckInterval   time.Duration `yaml:"check_interval"`
+	// Jitter spreads the CheckInterval sleep by ±(Jitter*CheckInterval)
+	// each cycle so a fleet deployed at the same moment doesn't keep
+	// hammering the server in lock-step. 0.0 disables the jitter entirely
+	// (not recommended for fleets). Valid range [0..1]. If the key is
+	// omitted from YAML, defaults to 0.3 (±30%). A pointer is used so
+	// "omitted" is distinguishable from "explicit 0".
+	Jitter          *float64      `yaml:"jitter"`
 	ChunkSize       int           `yaml:"chunk_size"`
 	MaxRetries      int           `yaml:"max_retries"`
 	RetryBackoff    time.Duration `yaml:"retry_backoff"`
@@ -152,6 +159,10 @@ func (c *Config) ApplyDefaults() {
 	if c.Update.WatchdogTimeout == 0 {
 		c.Update.WatchdogTimeout = 60 * time.Second
 	}
+	if c.Update.Jitter == nil {
+		j := 0.3
+		c.Update.Jitter = &j
+	}
 	if c.Update.AutoUpdate == nil {
 		t := true
 		c.Update.AutoUpdate = &t
@@ -216,6 +227,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Update.ChunkSize <= 0 {
 		return errors.New("update.chunk_size must be positive")
+	}
+	if c.Update.Jitter != nil && (*c.Update.Jitter < 0 || *c.Update.Jitter > 1) {
+		return fmt.Errorf("update.jitter: %v out of range [0, 1]", *c.Update.Jitter)
 	}
 	if _, ok := ParseMaxBump(c.Update.MaxBump); !ok {
 		return fmt.Errorf("update.max_bump: unknown %q (use none|patch|minor|major)", c.Update.MaxBump)

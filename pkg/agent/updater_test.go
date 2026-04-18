@@ -886,3 +886,32 @@ func TestRunOnce_UpdateNowSidecar_BypassesAutoUpdateFalse(t *testing.T) {
 		t.Fatalf("sidecar should have been removed; stat err = %v", err)
 	}
 }
+
+// --- CheckInterval jitter tests ---
+
+func TestNextSleep_ZeroJitterIsExact(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.CheckInterval = 100 * time.Millisecond
+	f.updater.cfg.Jitter = 0
+	for i := 0; i < 10; i++ {
+		if got := f.updater.nextSleep(); got != 100*time.Millisecond {
+			t.Fatalf("iter %d: got %v, want exactly CheckInterval", i, got)
+		}
+	}
+}
+
+func TestNextSleep_JitterStaysInRange(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.CheckInterval = 100 * time.Millisecond
+	f.updater.cfg.Jitter = 0.3
+
+	low := 70 * time.Millisecond
+	high := 130 * time.Millisecond
+
+	for i := 0; i < 200; i++ {
+		got := f.updater.nextSleep()
+		if got < low || got > high {
+			t.Fatalf("iter %d: got %v outside [%v, %v]", i, got, low, high)
+		}
+	}
+}
