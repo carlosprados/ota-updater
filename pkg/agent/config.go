@@ -62,6 +62,11 @@ type DeviceConfig struct {
 	ID            string `yaml:"id"`
 	SlotsDir      string `yaml:"slots_dir"`
 	ActiveSymlink string `yaml:"active_symlink"`
+	// DiskSpaceMinFreePct and DiskSpaceMinFreeMB drive a startup warning
+	// on the filesystem containing SlotsDir. 0 on either disables just
+	// that threshold; defaults 10% / 100 MiB mirror the server side.
+	DiskSpaceMinFreePct int `yaml:"disk_space_min_free_pct"`
+	DiskSpaceMinFreeMB  int `yaml:"disk_space_min_free_mb"`
 }
 
 // UpdateConfig controls the update loop cadence, download behavior and the
@@ -166,6 +171,12 @@ func (c *Config) ApplyDefaults() {
 	if c.Update.AutoUpdate == nil {
 		t := true
 		c.Update.AutoUpdate = &t
+	}
+	if c.Device.DiskSpaceMinFreePct == 0 {
+		c.Device.DiskSpaceMinFreePct = 10
+	}
+	if c.Device.DiskSpaceMinFreeMB == 0 {
+		c.Device.DiskSpaceMinFreeMB = 100
 	}
 	if c.Update.MaxBump == "" {
 		c.Update.MaxBump = "major"

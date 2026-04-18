@@ -22,6 +22,8 @@ device:
   id: "edge-001"                                 # unique per device
   slots_dir: "/opt/agent/slots"                  # A/B slot binaries live here
   active_symlink: "/opt/agent/current"           # symlink → currently active slot
+  disk_space_min_free_pct: 10                    # startup WARN if slots_dir FS
+  disk_space_min_free_mb: 100                    #   falls below either threshold
 
 update:
   check_interval: "1h"                           # heartbeat cadence

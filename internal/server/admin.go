@@ -17,6 +17,7 @@ type AdminDeps struct {
 	Manifester *Manifester // Invalidate() cache after reload
 	Logging    *Logging    // SetLevel() for /admin/loglevel
 	Logger     *slog.Logger
+	Metrics    *Metrics // optional; nil disables per-request metric emission
 
 	// RateLimitPerSec is the refill rate of the token bucket that throttles
 	// authentication FAILURES (401s). Legitimate requests with a correct
@@ -44,7 +45,7 @@ func RegisterAdminHandlers(mux *http.ServeMux, d AdminDeps) {
 	if d.RateLimitPerSec > 0 && d.RateLimitBurst > 0 {
 		limiter = rate.NewLimiter(rate.Limit(d.RateLimitPerSec), d.RateLimitBurst)
 	}
-	auth := bearerTokenMiddleware(d.Token, limiter, logger)
+	auth := bearerTokenMiddleware(d.Token, limiter, d.Metrics, logger)
 
 	mux.Handle("POST /admin/reload", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		oldHash := d.Store.TargetHash()
@@ -102,7 +103,7 @@ func RegisterAdminHandlers(mux *http.ServeMux, d AdminDeps) {
 // with Retry-After: 1 instead. Legitimate requests with the correct
 // token never touch the limiter — CI/CD tooling that calls /admin/reload
 // hundreds of times in a row never sees a 429.
-func bearerTokenMiddleware(token string, limiter *rate.Limiter, logger *slog.Logger) func(http.Handler) http.Handler {
+func bearerTokenMiddleware(token string, limiter *rate.Limiter, metrics *Metrics, logger *slog.Logger) func(http.Handler) http.Handler {
 	want := []byte(token)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -110,10 +111,13 @@ func bearerTokenMiddleware(token string, limiter *rate.Limiter, logger *slog.Log
 			const prefix = "Bearer "
 			if !strings.HasPrefix(auth, prefix) {
 				if !allow(limiter) {
+					metrics.IncAdminRateLimited()
+					metrics.ObserveAdminRequest(r.URL.Path, http.StatusTooManyRequests)
 					w.Header().Set("Retry-After", "1")
 					http.Error(w, "too many requests", http.StatusTooManyRequests)
 					return
 				}
+				metrics.ObserveAdminRequest(r.URL.Path, http.StatusUnauthorized)
 				logger.Warn("admin auth missing bearer",
 					"op", "admin_auth", "path", r.URL.Path, "remote", r.RemoteAddr)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -122,10 +126,13 @@ func bearerTokenMiddleware(token string, limiter *rate.Limiter, logger *slog.Log
 			got := []byte(auth[len(prefix):])
 			if subtle.ConstantTimeCompare(got, want) != 1 {
 				if !allow(limiter) {
+					metrics.IncAdminRateLimited()
+					metrics.ObserveAdminRequest(r.URL.Path, http.StatusTooManyRequests)
 					w.Header().Set("Retry-After", "1")
 					http.Error(w, "too many requests", http.StatusTooManyRequests)
 					return
 				}
+				metrics.ObserveAdminRequest(r.URL.Path, http.StatusUnauthorized)
 				logger.Warn("admin auth failed",
 					"op", "admin_auth", "path", r.URL.Path, "remote", r.RemoteAddr)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)

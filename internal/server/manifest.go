@@ -21,10 +21,11 @@ const DefaultManifestCacheSize = 4096
 // ManifesterConfig tunes Manifester behavior. Zero values fall back to
 // protocol defaults.
 type ManifesterConfig struct {
-	ChunkSize     int    // bytes per download chunk; 0 → protocol.DefaultChunkSize
-	RetryAfter    int    // seconds to tell agents to wait while a delta generates; 0 → 30
-	TargetVersion string // human-readable version label returned to agents
-	CacheSize     int    // signed-manifest LRU entry count; 0 → DefaultManifestCacheSize
+	ChunkSize     int      // bytes per download chunk; 0 → protocol.DefaultChunkSize
+	RetryAfter    int      // seconds to tell agents to wait while a delta generates; 0 → 30
+	TargetVersion string   // human-readable version label returned to agents
+	CacheSize     int      // signed-manifest LRU entry count; 0 → DefaultManifestCacheSize
+	Metrics       *Metrics // optional; when set, cache entries and signature failures are exported
 }
 
 // Manifester builds signed ManifestResponse payloads in response to agent
@@ -42,6 +43,7 @@ type Manifester struct {
 	retryAfter    int
 	targetVersion string
 	logger        *slog.Logger
+	metrics       *Metrics
 
 	cache *entryLRU[*protocol.ManifestResponse]
 }
@@ -68,6 +70,7 @@ func NewManifester(store *Store, priv ed25519.PrivateKey, cfg ManifesterConfig, 
 		retryAfter:    cfg.RetryAfter,
 		targetVersion: cfg.TargetVersion,
 		logger:        logger,
+		metrics:       cfg.Metrics,
 		cache:         newEntryLRU[*protocol.ManifestResponse](cfg.CacheSize),
 	}
 }
@@ -77,6 +80,9 @@ func NewManifester(store *Store, priv ed25519.PrivateKey, cfg ManifesterConfig, 
 // correctly-signed response for the new target.
 func (m *Manifester) Invalidate() {
 	m.cache.Clear()
+	if m.metrics != nil {
+		m.metrics.SetManifestCacheEntries(0)
+	}
 }
 
 // Build produces a ManifestResponse for the given heartbeat. Possible
@@ -137,6 +143,9 @@ func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protoc
 	}
 	sig, err := crypto.Sign(m.priv, payload)
 	if err != nil {
+		if m.metrics != nil {
+			m.metrics.IncSignatureFailure()
+		}
 		return nil, fmt.Errorf("sign manifest: %w", err)
 	}
 
@@ -152,6 +161,9 @@ func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protoc
 		DeltaEndpoint:   protocol.DeltaPath(hb.VersionHash, targetHash),
 	}
 	m.cache.Put(key, resp)
+	if m.metrics != nil {
+		m.metrics.SetManifestCacheEntries(m.cache.Len())
+	}
 	m.logger.Info("manifest built and cached",
 		"device_id", hb.DeviceID,
 		"from", hb.VersionHash,

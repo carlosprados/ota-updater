@@ -142,6 +142,8 @@ func run(cfgPath string) error {
 			AutoUpdate:           autoUpdate,
 			MaxBump:              maxBump,
 			UnknownVersionPolicy: unknownPolicy,
+			DiskSpaceMinFreePct:  cfg.Device.DiskSpaceMinFreePct,
+			DiskSpaceMinFreeMB:   cfg.Device.DiskSpaceMinFreeMB,
 		},
 		Primary:   primary,
 		Fallback:  fallback,

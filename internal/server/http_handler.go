@@ -15,6 +15,7 @@ type HTTPConfig struct {
 	Store      *Store
 	Manifester *Manifester
 	Logger     *slog.Logger
+	Metrics    *Metrics // optional; nil disables per-request metric emission
 }
 
 // NewHTTPHandler wires the OTA endpoints onto a fresh ServeMux, wrapped in
@@ -29,6 +30,7 @@ func NewHTTPHandler(cfg HTTPConfig) http.Handler {
 		store:      cfg.Store,
 		manifester: cfg.Manifester,
 		logger:     cfg.Logger,
+		metrics:    cfg.Metrics,
 	}
 	if h.logger == nil {
 		h.logger = slog.Default()
@@ -45,9 +47,16 @@ type httpHandler struct {
 	store      *Store
 	manifester *Manifester
 	logger     *slog.Logger
+	metrics    *Metrics
 }
 
 func (h *httpHandler) heartbeat(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	result := "none"
+	defer func() {
+		h.metrics.ObserveHeartbeat("http", result, time.Since(start).Seconds())
+	}()
+
 	defer r.Body.Close()
 	r.Body = http.MaxBytesReader(w, r.Body, maxHeartbeatBody)
 
@@ -56,6 +65,7 @@ func (h *httpHandler) heartbeat(w http.ResponseWriter, r *http.Request) {
 		h.logger.Warn("invalid heartbeat payload",
 			"op", "heartbeat", "err", err, "remote", r.RemoteAddr,
 		)
+		result = "bad_request"
 		http.Error(w, "invalid heartbeat", http.StatusBadRequest)
 		return
 	}
@@ -64,8 +74,17 @@ func (h *httpHandler) heartbeat(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("manifest build",
 			"op", "heartbeat", "device_id", hb.DeviceID, "err", err,
 		)
+		result = "error"
 		http.Error(w, "manifest build failed", http.StatusInternalServerError)
 		return
+	}
+	switch {
+	case !resp.UpdateAvailable:
+		result = "none"
+	case resp.RetryAfter > 0:
+		result = "retry"
+	default:
+		result = "update"
 	}
 	h.logger.Info("heartbeat served",
 		"op", "heartbeat",
@@ -109,6 +128,15 @@ func (h *httpHandler) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *httpHandler) delta(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	hotHit := "miss"
+	served := false
+	defer func() {
+		if served {
+			h.metrics.ObserveDeltaServe("http", hotHit, time.Since(start).Seconds())
+		}
+	}()
+
 	from := r.PathValue("from")
 	to := r.PathValue("to")
 
@@ -122,6 +150,12 @@ func (h *httpHandler) delta(w http.ResponseWriter, r *http.Request) {
 	if to != h.store.TargetHash() {
 		http.NotFound(w, r)
 		return
+	}
+
+	// Peek the hot cache before calling GetDeltaBytes so the metric label
+	// is accurate; GetDeltaBytes itself would hide the distinction.
+	if _, ok := h.store.PeekHotDelta(from, to); ok {
+		hotHit = "hit"
 	}
 
 	data, found, err := h.store.GetDeltaBytes(r.Context(), from)
@@ -138,6 +172,7 @@ func (h *httpHandler) delta(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	served = true
 	w.Header().Set("Content-Type", "application/octet-stream")
 	h.logger.Info("delta served",
 		"op", "delta_get", "from", from, "to", to,
