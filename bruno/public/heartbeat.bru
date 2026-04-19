@@ -1,0 +1,51 @@
+meta {
+  name: heartbeat
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/heartbeat
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "device_id": "{{device_id}}",
+    "version_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hw_info": {
+      "arch": "amd64",
+      "os": "linux",
+      "free_ram": 0,
+      "free_disk": 0
+    },
+    "timestamp": 1746000000,
+    "version": "1.0.0-manual"
+  }
+}
+
+docs {
+  Simulates a device heartbeat WITHOUT needing a real agent process.
+
+  The server inspects `version_hash` against its current `target_hash`:
+
+    * equal                → ManifestResponse { update_available: false }
+    * unknown source       → ManifestResponse { update_available: false }
+      (server logs a warn; it has no binary with this hash in its store,
+      so it cannot build a delta — treat as "nothing to do")
+    * different + no delta → ManifestResponse { update_available: true,
+      retry_after: <seconds> } and the server dispatches a bsdiff job
+    * different + cached   → full signed ManifestResponse with target_hash,
+      delta_hash, delta_endpoint, Ed25519 signature
+
+  The dummy `version_hash` above (64 zeros) triggers the "unknown source"
+  path — useful to show the WARN log on the server. To drive the "update
+  available" path you need a hash the server actually has registered;
+  typically you see it with /health or in the server logs after the
+  first real agent heartbeat.
+}

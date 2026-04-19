@@ -1,0 +1,56 @@
+# Demo server configuration.
+# All state lives under /tmp/ota-demo — wiped by demo/cleanup.sh.
+#
+# Ports (loopback-only):
+#   :18080  HTTP API — heartbeat, delta, report, health, /admin/*
+#   :15683  CoAP  — UDP; started but not exercised in the demo flow
+#   :19100  Metrics + pprof — Prometheus /metrics and /debug/pprof
+
+http:
+  addr: "127.0.0.1:18080"
+  read_header_timeout: "5s"
+  read_timeout: "30s"
+  write_timeout: "5m"
+  idle_timeout: "2m"
+  shutdown_timeout: "10s"
+
+coap:
+  addr: "127.0.0.1:15683"
+
+store:
+  binaries_dir: "/tmp/ota-demo/store/binaries"
+  deltas_dir: "/tmp/ota-demo/store/deltas"
+  target_max_memory_mb: 100
+  hot_delta_cache_mb: 128
+  delta_concurrency: 2
+  # 0 disables; /tmp is ephemeral and the warning would be noise
+  disk_space_min_free_pct: 0
+  disk_space_min_free_mb: 0
+
+crypto:
+  private_key: "/tmp/ota-demo/keys/server.key"
+
+target:
+  version: "1.0.0"
+  binary: "/tmp/ota-demo/target.bin"
+
+admin:
+  # Demo token (32+ chars, hex-like). In production: `openssl rand -hex 16`.
+  token: "demo-token-please-replace-in-prod-0000"
+  rate_limit_per_sec: 5
+  rate_limit_burst: 20
+
+logging:
+  level: "info"
+  format: "text"
+
+manifest:
+  chunk_size: 4096
+  # Short so the agent's RetryAfter wait is quick during the demo. Prod default 30.
+  retry_after: 5
+  cache_size: 1024
+
+metrics:
+  addr: "127.0.0.1:19100"
+  # pprof ON in the demo so the audience can see /debug/pprof. Keep OFF in prod.
+  pprof_enabled: true

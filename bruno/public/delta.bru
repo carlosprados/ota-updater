@@ -1,0 +1,35 @@
+meta {
+  name: delta
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{base_url}}/delta/0000000000000000000000000000000000000000000000000000000000000000/1111111111111111111111111111111111111111111111111111111111111111
+  body: none
+  auth: none
+}
+
+docs {
+  GET /delta/{fromHash}/{toHash} — fetches the compressed delta bytes.
+
+  Both segments MUST be 64 lowercase hex chars (SHA-256). The server also
+  requires `toHash` to match its current target_hash; anything else returns
+  404 (stale target).
+
+  Expected responses:
+
+    * 200 OK + application/octet-stream (Content-Length, supports Range)
+          delta file for (fromHash → toHash). Served from the in-RAM
+          hot cache when possible; on miss goes to disk via singleflight.
+
+    * 404 Not Found
+          Either the delta is not yet built, OR `toHash` is not the
+          current target. If the source (fromHash) is known, the server
+          dispatches an async bsdiff job — a follow-up request in a few
+          seconds should return 200.
+
+  The hashes above are placeholders. To drive a real 200 during the demo,
+  copy a real (fromHash, toHash) pair from a heartbeat ManifestResponse
+  or from the server logs.
+}
