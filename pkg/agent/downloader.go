@@ -102,6 +102,22 @@ func (d *Downloader) Download(ctx context.Context, tgt FetchTarget) error {
 		)
 	}
 
+	// Reusable backoff timer so ctx cancellation frees resources promptly
+	// instead of waiting for the fire (backoffs here can be up to 5 min
+	// under ENOSPC). Created stopped; armed via Reset before each wait.
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
+
 	backoff := d.cfg.RetryBackoff
 	var lastErr error
 	success := false
@@ -153,10 +169,11 @@ func (d *Downloader) Download(ctx context.Context, tgt FetchTarget) error {
 		if diskFull && wait < 5*time.Minute {
 			wait = 5 * time.Minute
 		}
+		timer.Reset(wait)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(wait):
+		case <-timer.C:
 		}
 		backoff *= 2
 		if backoff > 5*time.Minute {
