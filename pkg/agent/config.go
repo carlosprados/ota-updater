@@ -99,6 +99,12 @@ type UpdateConfig struct {
 	// UnknownVersionPolicy decides what to do when ManifestResponse.TargetVersion
 	// is not valid semver: "deny" (default, refuse) or "allow" (apply anyway).
 	UnknownVersionPolicy string `yaml:"unknown_version_policy"`
+	// RestartFailureCooldown is the minimum wait before the agent attempts
+	// another update cycle after an ExecRestart error. Prevents a loop of
+	// "download → patch → exec-fail → rollback → retry in 1h" when the
+	// failure is structural (corrupt binary, read-only FS, missing
+	// executable bit, etc.). Default 1h when the key is omitted.
+	RestartFailureCooldown time.Duration `yaml:"restart_failure_cooldown"`
 }
 
 // CryptoConfig locates the Ed25519 public key used to verify manifests.
@@ -183,6 +189,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Update.UnknownVersionPolicy == "" {
 		c.Update.UnknownVersionPolicy = "deny"
+	}
+	if c.Update.RestartFailureCooldown == 0 {
+		c.Update.RestartFailureCooldown = time.Hour
 	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"

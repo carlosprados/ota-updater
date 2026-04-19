@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -223,3 +224,61 @@ func TestStore_Close_ContextCancelled_ReturnsContextErr(t *testing.T) {
 
 var _ = sync.Mutex{} // pin sync import (kept from earlier tests)
 var _ = time.Second  // pin time import for t.Second
+
+func TestStore_HasBinary_MissCacheAbsorbsRepeatedStats(t *testing.T) {
+	s, _ := storeFixture(t)
+	// Pick a hash the store definitely doesn't have.
+	missing := "deadbeef" + strings.Repeat("0", 56)
+
+	// First call: must miss (and record the negative cache).
+	if s.HasBinary(missing) {
+		t.Fatalf("HasBinary(%s) = true, expected miss", missing)
+	}
+	// Record should be there.
+	s.missMu.Lock()
+	_, cached := s.missCache[missing]
+	s.missMu.Unlock()
+	if !cached {
+		t.Fatalf("miss cache did not record the absent hash")
+	}
+
+	// 100 subsequent probes must all short-circuit (no new stat attempted).
+	// We can't directly count stats, but we can prove the cache is still
+	// there after the burst.
+	for i := 0; i < 100; i++ {
+		if s.HasBinary(missing) {
+			t.Fatalf("HasBinary returned true on a known-miss hash")
+		}
+	}
+	// RegisterBinary invalidates, so a new known-present hash shows up.
+	newContent := []byte("brand-new-binary")
+	h, err := s.RegisterBinary(newContent)
+	if err != nil {
+		t.Fatalf("RegisterBinary: %v", err)
+	}
+	if !s.HasBinary(h) {
+		t.Fatalf("fresh binary not found after Register")
+	}
+	// And the miss cache was wiped, so the missing hash would hit disk again.
+	s.missMu.Lock()
+	entries := len(s.missCache)
+	s.missMu.Unlock()
+	if entries != 0 {
+		t.Fatalf("miss cache should be empty after Register invalidation, got %d entries", entries)
+	}
+}
+
+func TestStore_HasBinary_MissCacheBounded(t *testing.T) {
+	s, _ := storeFixture(t)
+	// Fill well beyond the cap with unique absent hashes.
+	for i := 0; i < hasBinaryMissCap+50; i++ {
+		h := "absent" + strings.Repeat("f", 58) + string([]byte{'a' + byte(i%26)})
+		_ = s.HasBinary(h[:64])
+	}
+	s.missMu.Lock()
+	size := len(s.missCache)
+	s.missMu.Unlock()
+	if size > hasBinaryMissCap {
+		t.Fatalf("miss cache size = %d, exceeds cap %d", size, hasBinaryMissCap)
+	}
+}

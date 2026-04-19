@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -913,5 +914,107 @@ func TestNextSleep_JitterStaysInRange(t *testing.T) {
 		if got < low || got > high {
 			t.Fatalf("iter %d: got %v outside [%v, %v]", i, got, low, high)
 		}
+	}
+}
+
+// --- Restart-failure cooldown tests ---
+
+func TestRunOnce_RestartFailure_ArmsCooldown(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.RestartFailureCooldown = time.Hour
+	manifest, deltaBytes := f.signedManifest()
+	f.primary.heartbeatResp = manifest
+	f.transport.body = deltaBytes
+	f.restart.err = errors.New("exec failed") // trigger the armed path
+
+	// Cycle 1 — restart fails, cooldown must be written.
+	if err := f.updater.RunOnce(context.Background()); err == nil {
+		t.Fatalf("expected error from failing restart")
+	}
+	cooldownPath := filepath.Join(f.stateDir, restartCooldownFile)
+	data, err := os.ReadFile(cooldownPath)
+	if err != nil {
+		t.Fatalf("cooldown file not written: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatalf("cooldown file empty")
+	}
+}
+
+func TestRunOnce_ActiveCooldown_SkipsCycle(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.RestartFailureCooldown = time.Hour
+
+	// Arm the cooldown by writing a future wake-up time directly.
+	marker := restartCooldownMarker{
+		WakeAtUnix: time.Now().Add(30 * time.Minute).Unix(),
+		Reason:     "test",
+	}
+	data, _ := json.Marshal(marker)
+	cooldownPath := filepath.Join(f.stateDir, restartCooldownFile)
+	if err := os.WriteFile(cooldownPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Even with a valid signed manifest available, RunOnce must short-circuit.
+	manifest, _ := f.signedManifest()
+	f.primary.heartbeatResp = manifest
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce should short-circuit silently, got err=%v", err)
+	}
+	// No heartbeat should have been sent (cooldown blocks before anything).
+	calls, _ := f.primary.snapshot()
+	if calls != 0 {
+		t.Fatalf("heartbeat calls = %d under active cooldown, want 0", calls)
+	}
+}
+
+func TestRunOnce_ExpiredCooldown_Proceeds(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.RestartFailureCooldown = time.Hour
+	// Expired marker in the past.
+	marker := restartCooldownMarker{
+		WakeAtUnix: time.Now().Add(-time.Hour).Unix(),
+	}
+	data, _ := json.Marshal(marker)
+	cooldownPath := filepath.Join(f.stateDir, restartCooldownFile)
+	if err := os.WriteFile(cooldownPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f.primary.heartbeatResp = &protocol.ManifestResponse{UpdateAvailable: false}
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	calls, _ := f.primary.snapshot()
+	if calls != 1 {
+		t.Fatalf("heartbeat calls = %d, want 1 (expired cooldown must not block)", calls)
+	}
+	// Marker must be cleaned up after detecting expiry.
+	if _, err := os.Stat(cooldownPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cooldown file should be removed on expiry; stat err = %v", err)
+	}
+}
+
+func TestRunOnce_ManualTrigger_BypassesCooldown(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.RestartFailureCooldown = time.Hour
+	// Armed and in the future.
+	marker := restartCooldownMarker{WakeAtUnix: time.Now().Add(time.Hour).Unix()}
+	data, _ := json.Marshal(marker)
+	cooldownPath := filepath.Join(f.stateDir, restartCooldownFile)
+	if err := os.WriteFile(cooldownPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Operator forces the cycle.
+	f.updater.TriggerUpdate()
+	f.primary.heartbeatResp = &protocol.ManifestResponse{UpdateAvailable: false}
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	// Manual trigger must clear the cooldown file as a side effect.
+	if _, err := os.Stat(cooldownPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("manual trigger should clear cooldown; stat err = %v", err)
 	}
 }
