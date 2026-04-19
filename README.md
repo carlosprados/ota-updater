@@ -647,6 +647,99 @@ in the same log stream with `op=disk_space`.
 
 ---
 
+## Memory limits (device-side)
+
+Both binaries are pure-Go static binaries that, by default, assume they
+can use all RAM of the host. On NB-IoT devices with ≤512 MiB of RAM
+shared with other services, or on containerised deployments with cgroup
+caps, you want **two knobs working together** to avoid OOM kills:
+
+### `GOMEMLIMIT` (Go runtime, 1.19+) — soft limit
+
+Tells the Go runtime "the heap must stay under this". When the heap
+approaches the limit, the GC runs **more aggressively** to reclaim
+memory; the process does not die. Set this as an environment variable:
+
+```sh
+GOMEMLIMIT=200MiB ./bin/edge-agent -config /etc/agent.yaml
+```
+
+This is a *soft* limit. If the process genuinely needs more memory (big
+bsdiff generation on server, big delta patch on agent), the GC will
+burn CPU trying to stay under the limit but the workload eventually
+succeeds. The trade-off is "memory budget over CPU usage", which is
+exactly the right call on a constrained device.
+
+### `MemoryMax=` (systemd) / `--memory=` (docker) — hard limit
+
+Applied by the kernel cgroup, enforced by the OOM killer. If the
+process goes over, the kernel kills it. This is the *last defense*;
+without it, a runaway process can starve the rest of the system.
+
+### The combo
+
+Always set both, with `GOMEMLIMIT` at ~**80% of `MemoryMax`** so the Go
+runtime has a window to react before the kernel pulls the trigger.
+
+Example systemd unit for the edge-agent:
+
+```ini
+[Unit]
+Description=OTA edge agent
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/edge-agent -config /etc/edge-agent.yaml
+Environment="GOMEMLIMIT=200MiB"
+MemoryMax=256M
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Docker / Kubernetes equivalents:
+
+```yaml
+# docker-compose
+services:
+  edge-agent:
+    image: your/edge-agent:1.0.0
+    environment:
+      - GOMEMLIMIT=200MiB
+    mem_limit: 256m
+
+# kubernetes Pod spec
+env:
+  - name: GOMEMLIMIT
+    value: "200MiB"
+resources:
+  limits:
+    memory: "256Mi"
+```
+
+The server has analogous needs but with a larger budget because bsdiff
+peaks at ~20× the target binary size. For a 20 MiB target at
+`delta_concurrency: 2` reserve at least `GOMEMLIMIT=1GiB` with
+`MemoryMax=1280M`.
+
+### What happens without these knobs
+
+- **No cgroup, no GOMEMLIMIT** (bare metal, low-RAM device): Go grows
+  until `malloc` fails. In practice the kernel OOM kills something —
+  often not you, which is worse (random service dies, your log says
+  nothing).
+- **cgroup set, no GOMEMLIMIT**: Go keeps expanding because it thinks
+  it has all of host RAM. Cgroup OOM fires from "out of the blue";
+  systemd/Docker restarts the process and the cycle repeats until the
+  natural heap peak passes.
+- **GOMEMLIMIT but no cgroup**: if anything escapes the Go heap
+  (cgo, unexpected stack growth, kernel pinning on network buffers),
+  nothing stops it. Less common but still possible.
+
+---
+
 ## Memory bounds (server, 24/7 operation)
 
 The update-server is designed for **strictly bounded RAM** regardless of
