@@ -1,0 +1,25 @@
+meta {
+  name: health
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base_url}}/health
+  body: none
+  auth: none
+}
+
+docs {
+  Liveness probe used by load balancers and operators.
+
+  Response is JSON:
+    {
+      "status": "ok",
+      "target_hash": "<sha256-hex of the current target binary>"
+    }
+
+  The target_hash here is authoritative: it's what every manifest will
+  reference until the next reload. Agents compare their own active-slot
+  hash against this to decide whether they need to update.
+}

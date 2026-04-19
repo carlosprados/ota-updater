@@ -1,0 +1,31 @@
+meta {
+  name: scrape
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{metrics_url}}/metrics
+  body: none
+  auth: none
+}
+
+docs {
+  Prometheus exposition of the updater's own counters/histograms/gauges
+  (prefix `updater_*`) plus the standard `go_*` and `process_*` collectors.
+
+  The listener lives on a SEPARATE address from the public API (see
+  server.yaml:metrics.addr, default 127.0.0.1:19100). Bind it to
+  loopback or a private network — /metrics has no authentication and
+  /debug/pprof exposes process internals.
+
+  Series to eyeball during the demo:
+    * updater_heartbeats_total{transport,result}
+    * updater_deltas_served_total{transport,hot_hit}
+    * updater_delta_generations_total{result}
+    * updater_async_generations_inflight
+    * updater_manifest_cache_entries
+    * updater_hot_delta_cache_bytes
+
+  See README §"Observability" for the full table.
+}
