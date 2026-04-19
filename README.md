@@ -821,6 +821,170 @@ under coordinated rollouts.
 
 ---
 
+## Operational recommendations for unattended deployments
+
+If your fleet is deployed somewhere you can't easily reach — rural
+NB-IoT sensors, remote industrial equipment, devices buried in
+infrastructure — you need to think about **long-term reliability**,
+not just "does the first update work". This section is the honest
+answer to "can I trust this for 100 updates over a year on a device
+I cannot service physically?".
+
+### The self-replacement mechanism does not degrade
+
+`syscall.Exec` — the default `RestartStrategy` — compiles down to
+`execve(2)`, which has no accumulating state:
+
+- The whole virtual address space is released (mappings, heap, stack).
+- All file descriptors with `CLOEXEC` are closed — Go marks `CLOEXEC`
+  by default on everything it opens (since Go 1.12), so no FD leak
+  crosses the exec boundary.
+- Signal handlers reset to defaults.
+- `argv` and `envp` are replaced atomically.
+
+Iteration 100 starts from the same clean floor as iteration 1. There
+is no memory fragmentation, no descriptor build-up, no counter that
+grows without bound. `systemd`, `init(1)` and every shell rely on
+this guarantee daily.
+
+### Real long-term failure modes, ranked by risk
+
+1. **The new binary crashes before its first heartbeat** — panic in
+   `init()`, config parse error, missing dependency, bad file
+   permission. Our watchdog is heartbeat-based, so if the process
+   dies before issuing one, the watchdog never runs. Mitigation:
+   the persistent `boot_count` at `<slotsDir>/.boot_count` survives
+   process death; once it exceeds `MaxBoots` (default 2), the agent
+   performs a **permanent rollback** to the previous slot on the
+   next boot. This only works if an external supervisor relaunches
+   the failed binary — see "Supervisor is mandatory" below.
+
+2. **Disk exhaustion from write residue** — partial downloads,
+   `.tmp-*` files, or unrotated logs. The agent sweeps
+   `.tmp-*`/`.partial` older than 24 h in `<StateDir>` on every
+   boot (and the server does the same for `binaries_dir` and
+   `deltas_dir`). Disk-space warnings at startup — see "Disk-space
+   warning at startup" — give you a Prometheus-visible hint before
+   things go wrong. You still need to configure log rotation in
+   your supervisor (journald defaults to 10 % of the disk; on a 4
+   GB device that is 400 MB of volatile state).
+
+3. **Flash wear** — 100 updates/year × 12 MB per binary ≈ 1.2 GB
+   written per slot per year. Consumer eMMC handles 3 000–10 000
+   program/erase cycles per cell, so this is years of headroom.
+   In practice NB-IoT fleets push 4–12 updates per year, not 100.
+   Essentially a non-issue.
+
+4. **Both slots hold a bad version** — A/B + boot-count rolls you
+   back to the last known-good slot, but if the bug was already
+   present there, you are stuck. This is a deployment-process
+   problem, not a mechanism problem. See "Canary your deploys"
+   below.
+
+5. **Ed25519 public key file corruption or rotation** — if the
+   public key on the device becomes unreadable, the agent can no
+   longer verify any manifest and freezes on its current version.
+   Writes are atomic and `fsync`'d (see `pkg/atomicio`), but a
+   physically dying flash sector could still cause this. Consider
+   storing the trust-anchor key on a read-only partition, or
+   keeping a backup copy at a second path that the agent can fall
+   back to.
+
+6. **A bug in the agent itself gets published over-the-air** — if
+   the new `edge-agent` survives the first confirm cycle but
+   degrades later (for example, a bug that surfaces only after 48 h
+   of uptime), no automatic rollback will catch it. Again, this is
+   a deployment problem; the mechanism works as intended.
+
+### What is already in place
+
+- Signature verified **before** the delta is downloaded — a tampered
+  or corrupt manifest never causes wasted NB-IoT downlink and never
+  writes garbage to the inactive slot.
+- Watchdog with `N=3` heartbeat attempts within `WatchdogTimeout`,
+  tolerant to transient NB-IoT connectivity loss.
+- Permanent rollback after `MaxBoots=2` boots without a confirm.
+- All on-disk writes go through `pkg/atomicio` with
+  `fsync`+`rename`+`fsync(dir)` — power-loss safe.
+- `ENOSPC` triggers a 5 min backoff instead of burning retries on
+  a static condition.
+- `ExecRestart` failure writes a persistent cooldown file (1 h by
+  default, tunable via `update.restart_failure_cooldown`) so that
+  a broken new binary can't trap the process in an `exec`-fail
+  loop that starves the CPU.
+- Admin endpoints are rate-limited with a minimum-length token
+  enforcement at boot.
+
+### Supervisor is mandatory for unattended deployments
+
+**If the device is somewhere you cannot physically reach, deploy
+the agent under an external supervisor.** No exceptions. Failure
+mode #1 above — early panic in the new binary — is mitigated by
+the persistent boot counter *only if something relaunches the
+failed binary*. Recommended supervisors:
+
+- **systemd**: `Restart=always`, `RestartSec=5s` is enough. Point
+  `ExecStart=` at the `current/edge-agent` symlink, not the slot
+  directly, so that rollback is transparent to the unit. See the
+  "systemd" section above for a full unit file.
+- **Docker**: `restart: unless-stopped` or `always`. Again, the
+  entrypoint should resolve the active slot via symlink. See the
+  "Docker" section above.
+- **Bare shell wrapper** (minimal devices without either): a
+  `while true; do $bin; sleep 5; done` loop will do the job. Not
+  pretty, but the contract (relaunch on exit) is what matters.
+
+### Canary your deploys
+
+A/B rollback protects each device against a bad update. It does
+**not** protect the fleet against a bad build. Before rolling a
+new version to all devices:
+
+1. Publish it to an `update-server` serving only a canary subset
+   (1–10 % of the fleet, ideally geographically and functionally
+   diverse).
+2. Observe for 24–48 h. Key signals: `updater_heartbeats_total`
+   staying steady per device, no spike in
+   `updater_signature_failures_total` (indicates key/config drift),
+   no rise in "boot count exceeded" reports arriving at the server.
+3. Only then promote the same binary to the production
+   `update-server` and let the rest of the fleet upgrade.
+
+Staged-rollout logic in the server itself (returning different
+manifests based on a device cohort) is **not implemented**; it
+would be a future extension. Today you achieve the same effect by
+running two `update-server` instances with different target
+binaries.
+
+### Monitoring signals worth alerting on
+
+From the `/metrics` endpoint (see "Observability"):
+
+- `updater_heartbeats_total{result="fail"}` — a rise means devices
+  are failing to talk to the server; could be network or
+  could be a new build that can't even report home.
+- `updater_signature_failures_total` — should be zero. Any non-zero
+  value implies key drift, clock-skew on your build pipeline, or
+  tampering.
+- `updater_admin_rate_limited_total` — a spike suggests somebody is
+  brute-forcing the admin bearer token.
+- Device-reported `UpdateReport` messages with `success=false` —
+  these surface in server logs as WARN with the failure reason;
+  they are your first warning that a rollout has gone wrong.
+
+### TL;DR
+
+- The `exec` mechanism itself is reliable at any iteration count;
+  it does not degrade.
+- Long-term failure modes are **operational**, not mechanical, and
+  are mitigated by: a mandatory external supervisor, disciplined
+  canary deploys, and monitoring the signals above.
+- Without an external supervisor, this agent should not be
+  deployed to devices you cannot physically reach. With one, plus
+  a canary workflow, it is designed for this exact use case.
+
+---
+
 ## Known limitations
 
 Items that were analysed and consciously deferred. None of these block

@@ -261,6 +261,55 @@ curl http://127.0.0.1:7000/hello
 > 10. Writes `.pending_update`, calls `syscall.Exec` on the new binary → process image is replaced, PID and open sockets survive, HTTP `:7000` restarts on the new code.
 > 11. New binary boots, sees `.pending_update`, runs a health-check heartbeat, **confirms** → settles.
 
+### Bonus: why didn't the agent's process die?
+
+You may notice something counterintuitive: you never `Ctrl-C`'d the
+agent, you never started a new one, and yet the banner now serves
+v1.1.0 and the logs keep streaming in the *same* terminal. How is
+that possible after an update?
+
+Because the agent **doesn't fork-and-exec**, it **`syscall.Exec`s**.
+The kernel replaces the process image — code segment, data, heap —
+with the new binary, but the process itself is never destroyed:
+
+- **Same PID**, same PPID — so your shell never received a `SIGCHLD`
+  and believes its child is still alive and well.
+- **Same cgroup, same uid/gid, same working directory, same env**.
+- **All open file descriptors survive**, including `stdin/stdout/stderr`
+  attached to your terminal — that's why the logs keep flowing.
+
+It's a deliberate design choice (default is `ExecRestart` in
+`pkg/agent`). It makes self-update transparent to:
+
+- `systemd` (any `Type=`, including `notify`),
+- Docker (PID 1 never changes, so the container stays up),
+- and — as you're seeing right now — an interactive shell.
+
+**Prove it in a fourth terminal**, while the demo is running:
+
+```sh
+PID=$(pgrep -f edge-app)
+echo "PID: $PID"
+readlink /proc/$PID/exe
+
+# now publish v2.0.0 and watch terminal 2 do its thing:
+./demo/publish-version.sh v3
+
+# re-run the same two commands:
+echo "PID: $PID"                    # → SAME number
+readlink /proc/$PID/exe             # → points to the OTHER slot now
+```
+
+The PID hasn't moved, but `/proc/<pid>/exe` is now pointing at a
+different binary in the other A/B slot. Literally the same process
+running different code.
+
+> The alternative strategy `ExitRestart` (shipped but not the default)
+> has the process actually exit with status 0 and rely on a
+> supervisor — `systemd`, Docker `restart: always` — to bring it
+> back. Useful when your deployment treats processes as cattle, but
+> it would **not** survive a bare shell like the one in this demo.
+
 ---
 
 ## 7 · Major bump v2.0.0 (another 3 min)
