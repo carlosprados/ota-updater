@@ -129,6 +129,12 @@ with `Retry-After: 1` instead of the usual 401. A 32-char random token
 combined with 5/s of failures is infeasible to brute-force; the limiter
 is a belt-and-suspenders layer on top of network access control.
 
+**Current scope**: the rate limit is **global**, not per-IP. A
+distributed attack from many source IPs saturates the same bucket.
+Operational mitigation: firewall the admin port to known sources (your
+CI/CD host, your jump box). Per-IP rate limiting is a tracked
+follow-up — see "Known limitations" below.
+
 ### `POST /admin/reload`
 
 Explicit reload trigger — useful in CI/CD pipelines that want synchronous
@@ -812,6 +818,42 @@ under coordinated rollouts.
   on realistic Go binaries (a single string change produces a 705 KiB
   rsync delta vs 5.8 KiB bsdiff). On NB-IoT downlink, that multiplier
   dominates over any RAM savings. See `benchmark/` for the harness.
+
+---
+
+## Known limitations
+
+Items that were analysed and consciously deferred. None of these block
+24/7 operation at the fleet sizes this project targets; they are
+tracked so the next iteration starts from a clear baseline.
+
+- **CoAP delta downloads do NOT support resume from a non-zero offset.**
+  If a Block2-transferred delta is interrupted mid-download, the agent
+  discards its `.partial` state and restarts the transfer from byte 0.
+  HTTP delta downloads resume normally via Range requests. For small
+  deltas (under ~100 KiB) the wasted NB-IoT downlink is negligible;
+  for larger payloads prefer HTTP as the primary transport, or accept
+  the cost when CoAP is mandatory for your radio stack. Implementing
+  CoAP Block2 start-at-N would require lower-level access to
+  `go-coap` options and is tracked as a follow-up PR.
+
+- **Admin rate limit is global, not per-IP.** See the "Admin control
+  plane" section above for the operational mitigation.
+
+- **Clock skew of `Heartbeat.Timestamp` is logged but not validated.**
+  The field is advisory — signatures and version authenticity live in
+  the manifest, not in the heartbeat. If clock-skew monitoring becomes
+  operationally useful, the scaffolding to add a warn + Prometheus
+  metric is ~40 LOC. Enforcement (rejection) would not be added even
+  then, because it would block updates to devices whose RTC is
+  corrupted — exactly the ones that need the update.
+
+- **bsdiff is the delta algorithm**. Memory peaks at ~20× the target
+  binary during generation. For targets much beyond 100 MiB the server
+  needs either more RAM or a different algorithm. librsync was
+  evaluated and rejected (delivers deltas ~100× larger than bsdiff on
+  realistic Go binaries); see `benchmark/` for the harness. xdelta3
+  is the next candidate if this limit becomes real.
 
 ---
 
