@@ -1,0 +1,45 @@
+# Demo agent configuration.
+# Consumed by every demo app (demo/apps/v{1,2,3}) — the binary embeds
+# pkg/agent as a library and reads this file on startup.
+
+server:
+  http_url: "http://127.0.0.1:18080"
+  coap_url: "coap://127.0.0.1:15683"
+  transport: "http"                    # demo uses HTTP for simplicity
+  fallback: false                       # no transport fallback in the demo
+
+  coap:
+    block_size: 512
+    ack_timeout: "60s"
+    max_retransmits: 4
+    keepalive: "2m"
+
+device:
+  id: "demo-device-01"
+  slots_dir: "/tmp/ota-demo/agent/slots"
+  active_symlink: "/tmp/ota-demo/agent/current"
+  disk_space_min_free_pct: 0
+  disk_space_min_free_mb: 0
+
+update:
+  # 5s cadence instead of 1h so the demo actually moves. jitter off for
+  # predictability on stage.
+  check_interval: "5s"
+  jitter: 0
+  chunk_size: 4096
+  max_retries: 3
+  retry_backoff: "2s"
+  # Short watchdog so the post-swap health check fires quickly.
+  watchdog_timeout: "10s"
+
+  auto_update: true
+  max_bump: "major"                     # demo does not exercise the bump gate
+  unknown_version_policy: "deny"
+  restart_failure_cooldown: "10s"       # short so "force past cooldown" demo is snappy
+
+crypto:
+  public_key: "/tmp/ota-demo/keys/agent.pub"
+
+logging:
+  level: "info"
+  format: "text"

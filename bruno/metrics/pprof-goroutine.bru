@@ -1,0 +1,28 @@
+meta {
+  name: pprof-goroutine
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{metrics_url}}/debug/pprof/goroutine?debug=2
+  body: none
+  auth: none
+}
+
+docs {
+  Dumps every goroutine stack in human-readable form. Useful during the
+  demo to show the audience that shutdown waits for the expected set of
+  goroutines (HTTP server, CoAP server, watcher, async bsdiff workers).
+
+  Requires server.yaml:metrics.pprof_enabled: true (it IS enabled in the
+  demo config, OFF by default in production).
+
+  The same endpoint is also consumable by `go tool pprof`:
+
+      go tool pprof -http=: http://127.0.0.1:19100/debug/pprof/goroutine
+
+  For CPU / heap profiles use:
+      /debug/pprof/profile?seconds=30
+      /debug/pprof/heap
+}
