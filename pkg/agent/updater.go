@@ -47,6 +47,11 @@ const downloadStateFile = ".download.json"
 // tooling can reference the name from outside the package.
 const UpdateNowFile = ".update_now"
 
+// restartCooldownFile stores the wake-up timestamp of the Restart-failure
+// cooldown. When present and in the future, RunOnce short-circuits so a
+// structural restart failure doesn't translate into a tight retry loop.
+const restartCooldownFile = ".restart_cooldown"
+
 // HWInfoFunc lets library consumers plug in real hardware probes
 // (memory, disk free, etc.). The default reports GOARCH/GOOS only.
 type HWInfoFunc func() protocol.HWInfo
@@ -95,6 +100,13 @@ type UpdaterConfig struct {
 	// that threshold.
 	DiskSpaceMinFreePct int
 	DiskSpaceMinFreeMB  int
+	// RestartFailureCooldown is how long the Updater must wait before
+	// attempting another update cycle after a Restart returned an error.
+	// Persisted to <StateDir>/.restart_cooldown, so the cooldown survives
+	// a process restart. 0 disables the cooldown (next cycle runs as
+	// usual — not recommended, since the failure is almost always
+	// structural).
+	RestartFailureCooldown time.Duration
 }
 
 // UpdaterDeps groups the collaborators the Updater needs. Construct each
@@ -131,10 +143,11 @@ type Updater struct {
 	hwInfo    HWInfoFunc
 	rand      *rand.Rand // jittered sleep source, seeded at NewUpdater
 
-	pendingPath   string
-	deltaStaging  string
-	downloadState string
-	updateNowPath string
+	pendingPath         string
+	deltaStaging        string
+	downloadState       string
+	updateNowPath       string
+	restartCooldownPath string
 
 	// forceOnce, when true, makes the next RunOnce skip the AutoUpdate /
 	// MaxBump policy gate. Set by TriggerUpdate or by detecting the
@@ -219,11 +232,12 @@ func NewUpdater(deps UpdaterDeps) (*Updater, error) {
 		logger:        logger,
 		hwInfo:        hw,
 		rand:          rand.New(rand.NewSource(time.Now().UnixNano())),
-		pendingPath:   filepath.Join(cfg.StateDir, pendingUpdateFile),
-		deltaStaging:  filepath.Join(cfg.StateDir, stagingDeltaFile),
-		downloadState: filepath.Join(cfg.StateDir, downloadStateFile),
-		updateNowPath: filepath.Join(cfg.StateDir, UpdateNowFile),
-		now:           time.Now,
+		pendingPath:         filepath.Join(cfg.StateDir, pendingUpdateFile),
+		deltaStaging:        filepath.Join(cfg.StateDir, stagingDeltaFile),
+		downloadState:       filepath.Join(cfg.StateDir, downloadStateFile),
+		updateNowPath:       filepath.Join(cfg.StateDir, UpdateNowFile),
+		restartCooldownPath: filepath.Join(cfg.StateDir, restartCooldownFile),
+		now:                 time.Now,
 	}, nil
 }
 
@@ -237,6 +251,20 @@ func (u *Updater) Run(ctx context.Context) error {
 	if err := u.BootPhase(ctx); err != nil {
 		return err
 	}
+	// One reusable timer for the whole loop instead of time.After per
+	// iteration. time.After leaks a goroutine and channel until it fires,
+	// which for a CheckInterval of 1h means ctx cancellation doesn't
+	// reclaim resources for up to ~1.3h. NewTimer + Reset + Stop gives us
+	// deterministic cleanup on shutdown.
+	timer := time.NewTimer(u.nextSleep())
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
 	for {
 		if err := u.RunOnce(ctx); err != nil {
 			u.logger.Warn("update cycle failed",
@@ -246,7 +274,8 @@ func (u *Updater) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(u.nextSleep()):
+		case <-timer.C:
+			timer.Reset(u.nextSleep())
 		}
 	}
 }
@@ -390,6 +419,32 @@ func (u *Updater) rollbackAndExec(ctx context.Context, pending *pendingUpdate, r
 // without an actionable update. On a successful swap+restart this does not
 // return (the process image is replaced).
 func (u *Updater) RunOnce(ctx context.Context) error {
+	// Restart-failure cooldown: if the previous cycle's Restart returned
+	// an error, we persisted a wake-up timestamp so repeated RunOnce
+	// calls (on the old binary that outlived the attempted exec) don't
+	// immediately re-attempt the same doomed update. Manual triggers
+	// still bypass this — an operator who knows the root cause can
+	// force past it by touching .update_now.
+	if until, ok := u.readRestartCooldown(); ok {
+		if u.now().Before(until) {
+			if u.peekForceOnce() {
+				u.logger.Info("restart cooldown active; proceeding anyway due to manual trigger",
+					"op", "update_cycle", "device_id", u.cfg.DeviceID,
+					"cooldown_until", until,
+				)
+				u.clearRestartCooldown()
+			} else {
+				u.logger.Info("restart cooldown active; skipping cycle",
+					"op", "update_cycle", "device_id", u.cfg.DeviceID,
+					"cooldown_until", until, "remaining", time.Until(until).Truncate(time.Second),
+				)
+				return nil
+			}
+		} else {
+			u.clearRestartCooldown() // expired
+		}
+	}
+
 	activePath, activeHash, _, err := u.slots.ActiveSlot()
 	if err != nil {
 		return fmt.Errorf("read active slot: %w", err)
@@ -521,9 +576,12 @@ func (u *Updater) RunOnce(ctx context.Context) error {
 		// Restart failed: undo the swap so we don't leave the device pointing
 		// at a binary we couldn't actually launch. The pending marker is
 		// cleared so the next BootPhase doesn't try to verify a swap that
-		// effectively never happened.
-		u.logger.Error("restart failed; rolling back",
-			"op", "update_cycle", "device_id", u.cfg.DeviceID, "err", err,
+		// effectively never happened. A cooldown is armed so the next
+		// RunOnce doesn't immediately re-attempt the same doomed update;
+		// it survives a process crash because it lives on disk.
+		u.logger.Error("restart failed; rolling back and arming cooldown",
+			"op", "update_cycle", "device_id", u.cfg.DeviceID,
+			"err", err, "cooldown", u.cfg.RestartFailureCooldown,
 		)
 		u.clearPending()
 		if rbErr := u.slots.Rollback(); rbErr != nil {
@@ -531,6 +589,7 @@ func (u *Updater) RunOnce(ctx context.Context) error {
 				"op", "update_cycle", "device_id", u.cfg.DeviceID, "err", rbErr,
 			)
 		}
+		u.armRestartCooldown()
 		return fmt.Errorf("restart: %w", err)
 	}
 	return nil // unreachable on successful exec
@@ -548,6 +607,24 @@ func (u *Updater) TriggerUpdate() {
 	u.forceMu.Lock()
 	u.forceOnce = true
 	u.forceMu.Unlock()
+}
+
+// peekForceOnce reports whether a manual trigger is armed WITHOUT
+// consuming it. Used by the restart-cooldown check at the top of
+// RunOnce — if the operator set .update_now or called TriggerUpdate,
+// we let the cycle proceed past the cooldown and the later
+// consumeForceOnce() actually clears the flag.
+func (u *Updater) peekForceOnce() bool {
+	u.forceMu.Lock()
+	fromCall := u.forceOnce
+	u.forceMu.Unlock()
+	if fromCall {
+		return true
+	}
+	if _, err := os.Stat(u.updateNowPath); err == nil {
+		return true
+	}
+	return false
 }
 
 // consumeForceOnce atomically reads and clears the force flag. It also
@@ -718,6 +795,59 @@ func (u *Updater) writePending(p *pendingUpdate) error {
 func (u *Updater) clearPending() {
 	if err := os.Remove(u.pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		u.logger.Warn("clear pending update", "op", "update_cycle", "err", err)
+	}
+}
+
+// restartCooldown is the on-disk shape of the restart-failure cooldown.
+// Kept human-readable (Unix seconds) so an operator can `cat` the file
+// and see when the cooldown expires.
+type restartCooldownMarker struct {
+	WakeAtUnix int64 `json:"wake_at_unix"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// armRestartCooldown records the wake-up timestamp after a failed Restart.
+// No-ops when the cooldown knob is 0 (caller disabled the feature).
+func (u *Updater) armRestartCooldown() {
+	if u.cfg.RestartFailureCooldown <= 0 {
+		return
+	}
+	m := restartCooldownMarker{
+		WakeAtUnix: u.now().Add(u.cfg.RestartFailureCooldown).Unix(),
+		Reason:     "exec restart returned error",
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		u.logger.Warn("arm restart cooldown: marshal", "op", "update_cycle", "err", err)
+		return
+	}
+	if err := atomicio.WriteFile(u.restartCooldownPath, data, 0o644, u.logger); err != nil {
+		u.logger.Warn("arm restart cooldown: write", "op", "update_cycle", "err", err)
+	}
+}
+
+// readRestartCooldown loads the marker if present. Returns (when, true)
+// when a valid cooldown is armed, (_, false) when the file is absent or
+// unparseable (silently treated as no cooldown so an unrelated disk
+// issue can't lock the agent out forever).
+func (u *Updater) readRestartCooldown() (time.Time, bool) {
+	data, err := os.ReadFile(u.restartCooldownPath)
+	if err != nil {
+		return time.Time{}, false
+	}
+	var m restartCooldownMarker
+	if err := json.Unmarshal(data, &m); err != nil {
+		return time.Time{}, false
+	}
+	if m.WakeAtUnix == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(m.WakeAtUnix, 0), true
+}
+
+func (u *Updater) clearRestartCooldown() {
+	if err := os.Remove(u.restartCooldownPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		u.logger.Warn("clear restart cooldown", "op", "update_cycle", "err", err)
 	}
 }
 

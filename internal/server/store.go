@@ -110,7 +110,25 @@ type Store struct {
 	// generations to finish or logs the ones still running when the ctx
 	// deadline expires.
 	asyncWG sync.WaitGroup
+
+	// missMu guards missCache, a tiny TTL-bounded negative cache that
+	// absorbs HasBinary floods. Under an attacker or a fleet of legacy
+	// devices sending random/garbage hashes every heartbeat, each miss
+	// used to trigger a fresh os.Stat. The cache lets the first stat
+	// speak for up to hasBinaryMissTTL seconds before the next one runs.
+	// RegisterBinary and Reload wipe the cache so a freshly-uploaded
+	// binary becomes visible immediately.
+	missMu    sync.Mutex
+	missCache map[string]time.Time
 }
+
+// Hardcoded knobs for the HasBinary negative cache. Not exposed in YAML —
+// the correct values are micro-technical and operators have no intuition
+// for them. Register/Reload invalidation keeps staleness bounded anyway.
+const (
+	hasBinaryMissTTL     = 30 * time.Second
+	hasBinaryMissCap     = 256 // bounded to keep memory predictable under attack
+)
 
 // Open initializes a Store from opts. The target binary is read, hashed,
 // persisted in BinariesDir as <hash>.bin if missing, and kept in RAM only if
@@ -150,6 +168,7 @@ func Open(ctx context.Context, opts StoreOptions, logger *slog.Logger) (*Store, 
 		targetHash: hash,
 		hotDeltas:  newByteBudgetLRU(opts.HotDeltaCacheBytes),
 		deltaSlots: make(chan struct{}, opts.DeltaConcurrency),
+		missCache:  make(map[string]time.Time, hasBinaryMissCap),
 	}
 	s.setTargetBin(data)
 
@@ -248,10 +267,48 @@ func (s *Store) HasDelta(fromHash string) bool {
 }
 
 // HasBinary reports whether a source binary with the given hash is registered
-// in the store (checked on disk).
+// in the store (checked on disk). A small negative TTL cache absorbs flood
+// traffic: the first miss for a given hash runs os.Stat; subsequent misses
+// for the same hash within hasBinaryMissTTL return false without touching
+// the filesystem. Positive results are NOT cached — a stat on a present
+// file is already cheap (kernel page cache) and a cache there would
+// complicate Register/Reload invariants.
 func (s *Store) HasBinary(hash string) bool {
+	s.missMu.Lock()
+	if deadline, ok := s.missCache[hash]; ok {
+		if time.Now().Before(deadline) {
+			s.missMu.Unlock()
+			return false
+		}
+		delete(s.missCache, hash) // expired
+	}
+	s.missMu.Unlock()
+
 	_, err := os.Stat(s.binaryPath(hash))
-	return err == nil
+	if err == nil {
+		return true
+	}
+	// Record the miss. Bounded eviction: if the map is at cap, drop a
+	// random entry. We don't need LRU — this is noise absorption.
+	s.missMu.Lock()
+	if len(s.missCache) >= hasBinaryMissCap {
+		for k := range s.missCache {
+			delete(s.missCache, k)
+			break
+		}
+	}
+	s.missCache[hash] = time.Now().Add(hasBinaryMissTTL)
+	s.missMu.Unlock()
+	return false
+}
+
+// invalidateMissCache clears every negative-cache entry. Called on any
+// mutation of the binaries dir (RegisterBinary, Reload) so a freshly
+// uploaded binary becomes visible on the very next heartbeat.
+func (s *Store) invalidateMissCache() {
+	s.missMu.Lock()
+	clear(s.missCache)
+	s.missMu.Unlock()
 }
 
 // Reload re-reads the target binary from TargetPath, recomputes its SHA-256,
@@ -276,6 +333,7 @@ func (s *Store) Reload(ctx context.Context) error {
 
 	// Every hot delta was computed against the previous target → stale.
 	s.hotDeltas.Clear()
+	s.invalidateMissCache()
 	if s.opts.Metrics != nil {
 		s.opts.Metrics.SetHotDeltaCacheBytes(0)
 		s.opts.Metrics.SetHotDeltaCacheEntries(0)
@@ -554,17 +612,20 @@ func checkDiskSpace(path string, minPct, minMB int, logger *slog.Logger) {
 
 // RegisterBinary stores a source binary in BinariesDir keyed by its SHA-256
 // hex. Returns the computed hash. Idempotent: does nothing if already present.
-// The binary is NOT cached in process RAM.
+// The binary is NOT cached in process RAM. Invalidates the HasBinary
+// negative cache so the new hash is visible on the very next heartbeat.
 func (s *Store) RegisterBinary(data []byte) (string, error) {
 	sum := sha256.Sum256(data)
 	hash := hex.EncodeToString(sum[:])
 	path := s.binaryPath(hash)
 	if _, err := os.Stat(path); err == nil {
+		s.invalidateMissCache()
 		return hash, nil
 	}
 	if err := atomicio.WriteFile(path, data, 0o644, s.logger); err != nil {
 		return "", fmt.Errorf("write binary %s: %w", hash, err)
 	}
+	s.invalidateMissCache()
 	return hash, nil
 }
 
