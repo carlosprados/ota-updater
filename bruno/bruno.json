@@ -1,0 +1,9 @@
+{
+  "version": "1",
+  "name": "OTA updater (demo)",
+  "type": "collection",
+  "ignore": [
+    "node_modules",
+    ".git"
+  ]
+}

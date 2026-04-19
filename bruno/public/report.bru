@@ -1,0 +1,45 @@
+meta {
+  name: report
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{base_url}}/report
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "device_id": "{{device_id}}",
+    "previous_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "new_hash":      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "success": true,
+    "timestamp": 1746000000
+  }
+}
+
+docs {
+  Post-update report. The agent calls this after a swap+restart cycle
+  completes — whether the new binary booted healthy (success=true) or the
+  watchdog rolled back (success=false, rollback_reason set).
+
+  Response: 202 Accepted with an empty body. The server logs the report at
+  INFO; there's no downstream consumer in this release (hook it up to
+  your fleet dashboard if you have one).
+
+  Fields on rollback look like:
+    {
+      "device_id":"...",
+      "previous_hash":"<new binary hash>",
+      "new_hash":"<rolled-back-to hash>",
+      "success": false,
+      "rollback_reason": "health check failed: ...",
+      "timestamp": ...
+    }
+}

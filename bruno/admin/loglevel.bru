@@ -1,0 +1,43 @@
+meta {
+  name: loglevel
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/admin/loglevel
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{admin_token}}
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "level": "debug"
+  }
+}
+
+docs {
+  Changes the running slog level WITHOUT restarting the server. The change
+  is applied atomically to a shared slog.LevelVar, so in-flight requests
+  see the new level on their next log call.
+
+  Accepted levels (case-insensitive): debug | info | warn | error.
+
+  Response (200):  { "level": "debug" }
+  Errors:
+    * 400 — unknown level or malformed JSON
+    * 401 — bad bearer
+    * 429 — admin rate limit on the 401 path (see reload.bru docs)
+
+  Typical demo flow: set to "debug" before making a heartbeat/delta
+  request from Bruno so the audience sees the verbose detail, then
+  return to "info" afterwards.
+}

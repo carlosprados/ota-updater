@@ -1,0 +1,41 @@
+meta {
+  name: reload
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/admin/reload
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{admin_token}}
+}
+
+docs {
+  Forces the server to re-read the target binary from disk, recompute its
+  SHA-256, invalidate the signed-manifest cache and (on the next heartbeat)
+  serve updates pointing at the new hash.
+
+  fsnotify already fires on target file changes, so in practice /admin/reload
+  is only needed when:
+    * your deployment process wants a synchronous confirmation ("yes,
+      target_hash is now XYZ"), or
+    * fsnotify didn't fire (unusual — filesystem quirk, network FS, etc.).
+
+  Response on success (200):
+    {
+      "target_hash":   "<new-sha>",
+      "previous_hash": "<old-sha>"
+    }
+
+  Failure modes:
+    * 401 — missing/wrong bearer.
+    * 429 — token-bucket rate-limit on 401 path (only when you've sent a
+           burst of wrong tokens; a legitimate client with the right token
+           is never throttled).
+    * 500 — reload failed (target file missing, permission error, etc.).
+           The previous target stays active; the server is still serving.
+}
