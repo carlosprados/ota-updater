@@ -252,6 +252,57 @@ curl http://127.0.0.1:7000/hello
 > 10. Escribe `.pending_update`, hace `syscall.Exec` con el nuevo binario → el proceso se reemplaza manteniendo PID y conexiones abiertas, el HTTP `:7000` arranca del nuevo código.
 > 11. El binario nuevo arranca, detecta `.pending_update`, hace un heartbeat de "salud", **lo confirma** → fija el estado.
 
+### Bonus: ¿por qué el proceso del agente no se ha muerto?
+
+Probablemente habrás notado algo contraintuitivo: no has hecho
+`Ctrl-C`, no has arrancado un agente nuevo, y sin embargo el banner
+ahora sirve v1.1.0 y los logs siguen apareciendo en la *misma*
+terminal. ¿Cómo es posible después de una actualización?
+
+Porque el agente **no hace fork-and-exec**, hace **`syscall.Exec`**.
+El kernel reemplaza la imagen del proceso — segmento de código,
+datos, heap — por la del binario nuevo, pero el proceso en sí nunca
+se destruye:
+
+- **Mismo PID**, mismo PPID — tu shell nunca recibió un `SIGCHLD` y
+  sigue creyendo que su hijo está vivo y sano.
+- **Mismo cgroup, mismo uid/gid, mismo working directory, mismo env**.
+- **Todos los FDs abiertos sobreviven**, incluyendo `stdin/stdout/stderr`
+  atados a tu terminal — por eso los logs siguen fluyendo.
+
+Es una decisión de diseño deliberada (default `ExecRestart` en
+`pkg/agent`). Hace que el self-update sea transparente para:
+
+- `systemd` (cualquier `Type=`, incluido `notify`),
+- Docker (el PID 1 nunca cambia, el contenedor sigue vivo),
+- y — como estás viendo ahora — una shell interactiva.
+
+**Demuéstralo en una cuarta terminal**, con la demo en marcha:
+
+```sh
+PID=$(pgrep -f edge-app)
+echo "PID: $PID"
+readlink /proc/$PID/exe
+
+# publica v2.0.0 y mira la terminal 2 hacer su magia:
+./demo/publish-version.sh v3
+
+# repite las dos líneas de arriba:
+echo "PID: $PID"                    # → MISMO número
+readlink /proc/$PID/exe             # → apunta al OTRO slot ahora
+```
+
+El PID no se ha movido, pero `/proc/<pid>/exe` ahora apunta a un
+binario distinto en el otro slot A/B. Literalmente el mismo proceso
+ejecutando código distinto.
+
+> La estrategia alternativa `ExitRestart` (incluida pero no es el
+> default) hace que el proceso termine con código 0 y deja que un
+> supervisor — `systemd`, Docker `restart: always` — lo vuelva a
+> arrancar. Es útil cuando tu despliegue trata los procesos como
+> ganado, pero **no** sobreviviría a una shell desnuda como la de
+> esta demo.
+
 ---
 
 ## 7 · Major bump v2.0.0 (otros 3 min)
