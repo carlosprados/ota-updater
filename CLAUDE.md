@@ -84,8 +84,18 @@ Pendientes de confirmación o decisión de diseño antes de llegar al paso corre
 2. ~~**Self-restart del agente tras swap**~~ — resuelto 2026-04-17: `syscall.Exec` default + `RestartStrategy` pluggable (`ExitRestart` como alternativa). Compatibilidad systemd/Docker documentada en README.
 3. ~~**Watchdog N reintentos dentro de la ventana**~~ — resuelto 2026-04-17: **N=3** configurable. `HealthChecker` pluggable. Boot-count `<slotsDir>/.boot_count`; >2 ⇒ versión mala + rollback permanente.
 4. ~~**Protección de delta corrupto**~~ — resuelto 2026-04-16: opción B implementada (firma sobre `targetHash || deltaHash`). Ver `pkg/protocol/signing.go`.
-5. **Clock skew** en `Timestamp` de heartbeat/report: definir política de validación server-side.
-6. **go-bsdiff**: poco activo. Validar temprano con binarios reales; considerar alternativa `icedream/go-bsdiff`.
+5. ~~**Clock skew** en `Timestamp` de heartbeat/report~~ — decidido 2026-04-19: **pospuesto** como mejora pendiente (ver sección "Mejoras pendientes conocidas" abajo). El valor de implementarlo ahora es marginal sin datos de fleet real; el campo sigue siendo advisory, el gate crypto real está en la firma Ed25519 del manifest.
+6. **go-bsdiff**: poco activo. Validar temprano con binarios reales; considerar alternativa `icedream/go-bsdiff` o `xdelta3`. Relacionado: librsync descartado tras benchmark.
+
+## Mejoras pendientes conocidas
+
+Analizadas y conscientemente pospuestas tras PR-G (2026-04-19). Ninguna es bloqueante para operación 24/7 a las escalas objetivo del proyecto; se tracquean para que la próxima iteración parta de baseline clara.
+
+- **Per-IP admin rate limit** (superset del bucket global de PR-E). El rate limit actual protege contra brute-force concentrado en una IP, pero un atacante distribuido desde muchas IPs satura el mismo bucket. Mitigación operacional disponible: firewall del puerto admin a sources conocidas (CI/CD, jump box). Implementación futura: `map[string]*rate.Limiter` con eviction por TTL + cap. ~80 líneas. **Razón de posponer**: no hay evidencia de ataque distribuido real; la mitigación firewall cubre el caso principal. Retomar si se observan logs con 429 que NO vengan todos de la misma IP.
+
+- **Clock-skew validation server-side** del `Heartbeat.Timestamp`. Hoy el server loguea el campo con INFO pero no valida contra su reloj. **Razón de posponer**: valor marginal sin datos de fleet real. El heartbeat no lleva información firmada que un atacante pueda "congelar"; el gate crypto real está en la firma Ed25519 del manifest. Implementación futura (si logs de rollout revelan skew sistemáticamente problemático): warn + métrica Prometheus `updater_heartbeat_skew_seconds` (histograma). **Nunca enforcement** (bloquearía updates a devices con RTC corrupto que son exactamente los que más los necesitan). ~40 líneas.
+
+- **CoAP Block2 resume** del downloader del agente. Actualmente si una descarga CoAP se corta a mitad, el agente descarta el `.partial` y reinicia desde byte 0. HTTP con Range funciona normal. **Razón de posponer**: HTTP es el transport preferido para deltas grandes donde el resume es crítico; CoAP es aceptable para deltas pequeños. Mitigación operacional: preferir `transport: http` cuando el target > 100 KiB. Implementación futura: jugar con opciones Block2 de `go-coap` para indicar start block. Mediano-grande, probablemente PR propio. Documentado en README §"Known limitations".
 
 ## Comandos habituales
 
