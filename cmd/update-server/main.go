@@ -118,6 +118,7 @@ func run(cfgPath string) error {
 	})
 	apiHandler := server.NewHTTPHandler(server.HTTPConfig{
 		Store: store, Manifester: manifester, Logger: logger, Metrics: metrics,
+		BinariesDir: cfg.Store.BinariesDir,
 	})
 	// Catch-all: anything not matched by /admin/* goes through the API mux
 	// (which has its own method+path patterns and panic recovery).

@@ -15,7 +15,7 @@ Ships two binaries plus a keygen tool.
 
 | What | Where | Role |
 |---|---|---|
-| `update-server` | `cmd/update-server/` | Serves signed manifests and compressed delta patches over HTTP and CoAP. fsnotify auto-reload; admin control plane (`/admin/reload`, `/admin/loglevel`) behind a Bearer token. |
+| `update-server` | `cmd/update-server/` | Serves signed manifests and compressed delta patches over HTTP and CoAP. Also serves plain binaries by name (`GET /binaries/{name}`) for fleets driven by external orchestrators. fsnotify auto-reload; admin control plane (`/admin/reload`, `/admin/loglevel`) behind a Bearer token. |
 | `edge-agent` | `cmd/edge-agent/` *(pending, step 15)* | Runs on the device. Heartbeats, downloads deltas, applies patches, manages A/B slots and rollback. Will also be available as a Go library (`pkg/agent/`) so any Go executable can embed update logic. |
 | `keygen` | `tools/keygen/` | Generates the Ed25519 keypair once. |
 
@@ -186,6 +186,41 @@ Responses:
   every handler into a structured 500/5.00 response, and bounds
   concurrent bsdiff runs to protect CPU/RAM under bursty load from many
   distinct source versions.
+
+---
+
+## Plain binary download (`GET /binaries/{name}`)
+
+Some fleets are driven by an external IoT orchestrator (an MQTT-based
+platform, a custom control plane, etc.) that hands the device a flat
+`downloadUrl` plus an out-of-band SHA-256, instead of consuming the signed
+manifest + delta flow. To support that integration without standing up a
+separate file server next to `update-server`, the binaries directory is
+exposed read-only over HTTP.
+
+```sh
+curl -O http://update.example.com:8080/binaries/myapp-1.2.3
+```
+
+- **Path**: `GET /binaries/{name}`. Only present when `store.binaries_dir`
+  is configured (which it always is in normal deployments).
+- **Allowed names**: 1..255 chars, `[A-Za-z0-9._-]+`, no leading dot. Anything
+  else returns `404` — names are never reflected to the filesystem and there
+  is no leak about whether the file exists.
+- **Range**: supported via `http.ServeContent`, so resumable on flaky links.
+- **Headers**: `Content-Type: application/octet-stream`,
+  `Cache-Control: no-store`.
+- **Auth**: none. The endpoint is intentionally unauthenticated so devices
+  that only know the URL can fetch — pair it with network ACLs (firewall to
+  trusted CIDRs, VPN, internal-only LB) and don't place sensitive artifacts
+  in `binaries_dir`.
+- **Integrity**: not enforced by the server. The agent must verify the
+  downloaded bytes against a hash it received through its own trust channel
+  (e.g. the operation envelope from its orchestrator).
+
+If you need authenticated downloads, sit a reverse proxy in front and
+require a Bearer token there. The server-side endpoint stays simple by
+design.
 
 ---
 
