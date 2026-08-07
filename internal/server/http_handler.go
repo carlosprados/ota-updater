@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/amplia/ota-updater/pkg/protocol"
+	"github.com/carlosprados/ota-updater/pkg/protocol"
 )
 
 // HTTPConfig bundles dependencies for the HTTP handler set.

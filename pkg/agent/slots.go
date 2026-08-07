@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/amplia/ota-updater/pkg/atomicio"
+	"github.com/carlosprados/ota-updater/pkg/atomicio"
 )
 
 // Canonical slot names. An A/B layout is fixed to keep the on-disk contract

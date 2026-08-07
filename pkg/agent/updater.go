@@ -17,10 +17,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amplia/ota-updater/pkg/atomicio"
-	"github.com/amplia/ota-updater/pkg/crypto"
-	"github.com/amplia/ota-updater/pkg/delta"
-	"github.com/amplia/ota-updater/pkg/protocol"
+	"github.com/carlosprados/ota-updater/pkg/atomicio"
+	"github.com/carlosprados/ota-updater/pkg/crypto"
+	"github.com/carlosprados/ota-updater/pkg/delta"
+	"github.com/carlosprados/ota-updater/pkg/protocol"
 )
 
 // orphanSweepMaxAge is the threshold past which stray temp/partial files in

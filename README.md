@@ -11,12 +11,31 @@ Ships two binaries plus a keygen tool.
 
 ---
 
+## Install
+
+Every package under `pkg/` is importable:
+
+```sh
+go get github.com/carlosprados/ota-updater@latest
+```
+
+```go
+import (
+    "github.com/carlosprados/ota-updater/pkg/agent"
+    "github.com/carlosprados/ota-updater/pkg/delta"
+    "github.com/carlosprados/ota-updater/pkg/protocol"
+)
+```
+
+Licensed under [Apache 2.0](LICENSE). See
+[Embedding as a library](#embedding-as-a-library) for a self-contained example.
+
 ## Components
 
 | What | Where | Role |
 |---|---|---|
 | `update-server` | `cmd/update-server/` | Serves signed manifests and compressed delta patches over HTTP and CoAP. fsnotify auto-reload; admin control plane (`/admin/reload`, `/admin/loglevel`) behind a Bearer token. |
-| `edge-agent` | `cmd/edge-agent/` *(pending, step 15)* | Runs on the device. Heartbeats, downloads deltas, applies patches, manages A/B slots and rollback. Will also be available as a Go library (`pkg/agent/`) so any Go executable can embed update logic. |
+| `edge-agent` | `cmd/edge-agent/` | Runs on the device. Heartbeats, downloads deltas, applies patches, manages A/B slots and rollback. Will also be available as a Go library (`pkg/agent/`) so any Go executable can embed update logic. |
 | `keygen` | `tools/keygen/` | Generates the Ed25519 keypair once. |
 
 ## Prerequisites
@@ -238,9 +257,9 @@ import (
     "syscall"
     "time"
 
-    "github.com/amplia/ota-updater/pkg/agent"
-    "github.com/amplia/ota-updater/pkg/crypto"
-    "github.com/amplia/ota-updater/pkg/protocol"
+    "github.com/carlosprados/ota-updater/pkg/agent"
+    "github.com/carlosprados/ota-updater/pkg/crypto"
+    "github.com/carlosprados/ota-updater/pkg/protocol"
 )
 
 func main() {
@@ -1049,4 +1068,26 @@ docs/
   signing.md         # authoritative signature scheme reference
 configs/             # example agent.yaml and server.yaml
 Taskfile.yml         # build/test/ci task runner config
+```
+
+---
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+```
+Copyright 2026 Carlos Prados
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 ```

@@ -1,4 +1,4 @@
-module github.com/amplia/ota-updater
+module github.com/carlosprados/ota-updater
 
 go 1.25.6
 

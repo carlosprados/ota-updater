@@ -19,7 +19,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/amplia/ota-updater/pkg/crypto"
+	"github.com/carlosprados/ota-updater/pkg/crypto"
 )
 
 func main() {
