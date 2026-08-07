@@ -23,9 +23,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/amplia/ota-updater/pkg/agent"
-	"github.com/amplia/ota-updater/pkg/crypto"
-	"github.com/amplia/ota-updater/pkg/protocol"
+	"github.com/carlosprados/ota-updater/pkg/agent"
+	"github.com/carlosprados/ota-updater/pkg/crypto"
+	"github.com/carlosprados/ota-updater/pkg/protocol"
 )
 
 const (

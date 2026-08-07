@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amplia/ota-updater/pkg/delta"
+	"github.com/carlosprados/ota-updater/pkg/delta"
 )
 
 // storeFixture creates a Store with an old binary registered and a target

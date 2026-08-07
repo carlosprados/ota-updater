@@ -26,7 +26,7 @@ Especificación canónica: `prompt-ota-updater.md` en la raíz. Cualquier desvia
 ## Stack
 
 - Go 1.22+ (build con `CGO_ENABLED=0`, ambos binarios estáticos).
-- Module path: `github.com/amplia/ota-updater`.
+- Module path: `github.com/carlosprados/ota-updater`.
 - Dependencias previstas: `go-bsdiff` (delta), `klauspost/compress/zstd`, `plgd-dev/go-coap/v3`, `fxamacker/cbor/v2`, `gopkg.in/yaml.v3`. `crypto/ed25519` y `log/slog` de stdlib. Minimizar externas.
 
 ## Layout

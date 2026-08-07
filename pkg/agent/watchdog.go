@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amplia/ota-updater/pkg/atomicio"
+	"github.com/carlosprados/ota-updater/pkg/atomicio"
 )
 
 // Default tuning for the post-swap health verification window. These match

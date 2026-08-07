@@ -11,7 +11,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/amplia/ota-updater/pkg/atomicio"
+	"github.com/carlosprados/ota-updater/pkg/atomicio"
 )
 
 // ErrResumeUnsupported is returned by transports that can't honor a non-zero
