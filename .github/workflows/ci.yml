@@ -116,6 +116,18 @@ jobs:
           curl -sSLf -o /tmp/hugo.deb \
             "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.deb"
           sudo dpkg -i /tmp/hugo.deb
+      # Hugo cannot validate mermaid (it renders in the browser), and the
+      # diagrams were once checked against a newer mermaid than the theme
+      # ships - which published a diagram that rendered as "Syntax error in
+      # text" off a green build. This parses them with the theme's own
+      # bundled version.
+      - name: Validate diagrams
+        run: |
+          set -euo pipefail
+          hugo mod vendor
+          node tools/check-diagrams.mjs
+          rm -rf _vendor
+
       - name: Build site
         run: hugo --gc --minify --printPathWarnings
       - name: Assert diagrams survived into the HTML

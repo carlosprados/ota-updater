@@ -86,10 +86,20 @@ tasks:
     cmds:
       - hugo --gc --minify --printPathWarnings
 
-  docs-check:
-    desc: Build the docs and assert the mermaid diagrams survived into the HTML
+  docs-diagrams:
+    desc: Parse every mermaid diagram against the exact version the theme ships
     dir: '{{.SITE_DIR}}'
     cmds:
+      # Needs the theme on disk to read its bundled mermaid version.
+      - hugo mod vendor
+      - node tools/check-diagrams.mjs
+      - rm -rf _vendor
+
+  docs-check:
+    desc: Build the docs, validate the diagrams, and assert they reached the HTML
+    dir: '{{.SITE_DIR}}'
+    cmds:
+      - task: docs-diagrams
       - hugo --gc --minify
       - test -f public/index.html
       # A theme upgrade that changes the mermaid render hook would otherwise

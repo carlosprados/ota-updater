@@ -4,8 +4,6 @@ weight: 10
 description: "Components, the content-addressed store, and why the split between bytes and bookkeeping matters."
 ---
 
-# Architecture
-
 ## Package layout
 
 Everything under `pkg/` is exported and importable. There is no `internal/`
@@ -35,8 +33,8 @@ flowchart TB
     SERVER --> PROTO & CRYPTO & DELTA & COMP & AIO
     DELTA --> COMP
 
-    classDef entry fill:#fef7e0,stroke:#f9ab00
-    classDef lib fill:#e8f0fe,stroke:#4285f4
+    classDef entry fill:#f9ab002e,stroke:#f9ab00
+    classDef lib fill:#4285f42e,stroke:#4285f4
     class EA,US entry
     class AGENT,SERVER,PROTO,CRYPTO,DELTA,COMP,AIO lib
 ```
@@ -73,9 +71,9 @@ flowchart LR
     D1 --> HC
     B1 -.-> SRC
 
-    classDef disk fill:#f1f3f4,stroke:#5f6368
-    classDef ram fill:#e6f4ea,stroke:#34a853
-    classDef never fill:#fce8e6,stroke:#d93025
+    classDef disk fill:#5f63682e,stroke:#5f6368
+    classDef ram fill:#34a8532e,stroke:#34a853
+    classDef never fill:#d930252e,stroke:#d93025
     class B1,D1 disk
     class TC,HC ram
     class SRC never
@@ -171,8 +169,8 @@ flowchart TD
     DISK -->|no| GEN["dispatch async bsdiff<br/><i>bounded by delta_concurrency</i>"]
     GEN --> R404["404 → agent retries<br/>after RetryAfter"]
 
-    classDef good fill:#e6f4ea,stroke:#34a853
-    classDef bad fill:#fce8e6,stroke:#d93025
+    classDef good fill:#34a8532e,stroke:#34a853
+    classDef bad fill:#d930252e,stroke:#d93025
     class SERVE good
     class NF,R404 bad
 ```
@@ -194,7 +192,7 @@ flowchart LR
     S --> R["rename()<br/><i>atomic swap</i>"]
     R --> D["fsync(parent dir)<br/><i>dirent durable</i>"]
 
-    classDef step fill:#e8f0fe,stroke:#4285f4
+    classDef step fill:#4285f42e,stroke:#4285f4
     class W,S,R,D step
 ```
 

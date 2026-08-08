@@ -4,8 +4,6 @@ weight: 40
 description: "A/B slots, the watchdog, rollback, and embedding the agent as a library."
 ---
 
-# Edge agent
-
 ## A/B slots
 
 The device keeps two slot files and a symlink. Updates are written to the
@@ -96,29 +94,24 @@ network stack and the process both work" — but an embedder that knows what
 ```mermaid
 flowchart TD
     START["RunOnce"] --> CD{"restart cooldown<br/>active?"}
-    CD -->|yes, no manual trigger| SKIP["skip cycle"]
+    CD -->|"yes, no override"| SKIP["skip cycle"]
     CD -->|no| HB["heartbeat"]
-
-    HB --> AVAIL{"UpdateAvailable?"}
-    AVAIL -->|no| DONE["done"]
-    AVAIL -->|"RetryAfter > 0"| DONE
-
-    AVAIL -->|yes| GATE{"policy gate<br/><i>auto_update + max_bump</i>"}
-    GATE -->|blocked| LOG["log availability,<br/>do not apply"]
-    GATE -->|"allowed, or<br/>manual override"| VERIFY["verify signature"]
-
+    HB --> AVAIL{"update available?"}
+    AVAIL -->|"no, or RetryAfter"| DONE["done"]
+    AVAIL -->|yes| GATE{"policy gate"}
+    GATE -->|blocked| LOG["log only,<br/>do not apply"]
+    GATE -->|"allowed or<br/>manual override"| VERIFY["verify signature"]
     VERIFY -->|invalid| ABORT["abort"]
-    VERIFY -->|valid| DL["download<br/><i>resumable, backoff+jitter</i>"]
-
-    DL --> RECON["reconstruct<br/><i>bspatch or decompress</i>"]
+    VERIFY -->|valid| DL["download<br/><i>resumable</i>"]
+    DL --> RECON["reconstruct"]
     RECON -->|hash mismatch| ABORT
     RECON --> STAGE["write inactive slot"]
     STAGE --> MARK["write .pending_update"]
-    MARK --> SWAP["atomic symlink swap"]
+    MARK --> SWAP["swap symlink"]
     SWAP --> EXEC["syscall.Exec"]
 
-    classDef bad fill:#fce8e6,stroke:#d93025
-    classDef ok fill:#e6f4ea,stroke:#34a853
+    classDef bad fill:#d930252e,stroke:#d93025
+    classDef ok fill:#34a8532e,stroke:#34a853
     class ABORT,SKIP bad
     class EXEC ok
 ```

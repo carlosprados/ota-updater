@@ -3,8 +3,6 @@ title: "OTA Updater"
 weight: 1
 ---
 
-# OTA Updater
-
 A Go library and server for **over-the-air updates on constrained networks** —
 built for NB-IoT links at 20–60 kbps with high latency and frequent
 disconnects, where a naive "download the new binary" strategy is not viable.
@@ -60,8 +58,8 @@ flowchart LR
     UPD --> SLOTS
     SLOTS -->|"5 . POST /report"| SERVER
 
-    classDef srv fill:#e8f0fe,stroke:#4285f4,stroke-width:1px
-    classDef dev fill:#e6f4ea,stroke:#34a853,stroke-width:1px
+    classDef srv fill:#4285f42e,stroke:#4285f4,stroke-width:1px
+    classDef dev fill:#34a8532e,stroke:#34a853,stroke-width:1px
     class REG,STORE,MAN,RET srv
     class UPD,SLOTS dev
 ```

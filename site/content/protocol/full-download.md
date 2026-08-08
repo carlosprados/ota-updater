@@ -4,8 +4,6 @@ weight: 22
 description: "The path that stops a device from being stranded forever."
 ---
 
-# Full-download fallback
-
 ## The failure it fixes
 
 Delta updates have a hard precondition: **the server must still hold the exact
@@ -26,8 +24,8 @@ flowchart TD
     NO["<b>no</b>"] --> OLD["<i>before:</i><br/>update_available = false<br/>on every heartbeat, forever"]
     NO --> NEW["<i>now:</i><br/>whole compressed target<br/>via binary_endpoint"]
 
-    classDef bad fill:#fce8e6,stroke:#d93025
-    classDef good fill:#e6f4ea,stroke:#34a853
+    classDef bad fill:#d930252e,stroke:#d93025
+    classDef good fill:#34a8532e,stroke:#34a853
     class OLD bad
     class NEW,YES good
 ```
@@ -43,8 +41,8 @@ likely to need it.
 The two modes differ in exactly one step:
 
 ```mermaid
-flowchart LR
-    subgraph SHARED1[" "]
+flowchart TD
+    subgraph SHARED["identical in both modes"]
         direction TB
         V["verify signature"] --> DL["download"] --> CT["check transfer hash"]
     end
@@ -58,7 +56,7 @@ flowchart LR
     U --> CHK
     CHK --> STAGE["stage inactive slot,<br/>swap, exec"]
 
-    classDef full fill:#e6f4ea,stroke:#34a853
+    classDef full fill:#34a8532e,stroke:#34a853
     class U full
 ```
 
