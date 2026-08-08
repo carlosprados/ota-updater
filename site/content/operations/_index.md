@@ -4,8 +4,6 @@ weight: 50
 description: "Running it: deployment, observability, resource limits."
 ---
 
-# Operations
-
 ## Deployment shape
 
 ```mermaid
@@ -35,8 +33,8 @@ flowchart TB
     API --- FS
     API --- KEY
 
-    classDef secret fill:#fce8e6,stroke:#d93025
-    classDef pub fill:#e8f0fe,stroke:#4285f4
+    classDef secret fill:#d930252e,stroke:#d93025
+    classDef pub fill:#4285f42e,stroke:#4285f4
     class KEY,ADMIN secret
     class LB,API,COAP pub
 ```

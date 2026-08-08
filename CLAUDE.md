@@ -184,11 +184,29 @@ Analizadas y conscientemente pospuestas tras PR-G (2026-04-19). Ninguna es bloqu
   completo, fallback de transporte, workflow del operador), stateDiagram-v2
   (slots A/B, watchdog/boot, ciclo de vida del artefacto, orden de verificación)
   y classDiagram (tipos del protocolo, Store vs Registry).
-- **No se validan en build** (mermaid renderiza en cliente). `task docs-check` y
-  el workflow comprueban que `class="mermaid"` aparece en el HTML — eso caza el
-  fallo real: que una subida de tema cambie el render hook y se publique un sitio
-  lleno de bloques de código en crudo. Para validar la *sintaxis*, mermaid CLI
-  (`mmdc -p` con `--no-sandbox`; los 23 diagramas se verificaron así).
+- **Validación de diagramas** (`site/tools/check-diagrams.mjs`, en `task
+  docs-diagrams` y en el CI). Parsea cada bloque con **la versión exacta de
+  mermaid que empaqueta el tema**, leída de `assets/js/mermaid/mermaid.min.js`
+  (hoy 11.8.0) en vez de un pin que se desincroniza.
+  **Por qué existe** (mordió el 2026-08-08): se validaron los diagramas con
+  mermaid 11.16 vía `mmdc`, que acepta sintaxis que la 11.8 rechaza. Resultado:
+  build verde y un `stateDiagram` publicado que en el navegador ponía "Syntax
+  error in text". El caso concreto era **un segundo `:` en la etiqueta de una
+  transición** (`[*] --> Declared: artifacts: in server.yaml`).
+- Además `task docs-check` y el workflow comprueban que `class="mermaid"` aparece
+  en el HTML: eso caza el otro fallo posible, que una subida de tema cambie el
+  render hook y se publique un sitio lleno de bloques de código en crudo.
+- **Colores**: usar SIEMPRE rellenos translúcidos (`fill:#34a8532e`) en `classDef`
+  y `rgba()` en los `rect` de secuencia. Un relleno claro opaco es ilegible en
+  modo oscuro, porque el color del texto lo pone el tema y no se puede fijar por
+  nodo. Un tinte compone sobre el fondo activo y conserva el contraste en ambos.
+- **Ancho**: los flowcharts con ramas paralelas y etiquetas en las aristas se
+  disparan a lo ancho; por encima de ~1500 px el navegador los encoge y el texto
+  se vuelve ilegible. Medir con `mmdc` + `viewBox` antes de dar uno por bueno.
+- **No poner `# H1` en el cuerpo**: Relearn ya emite el `<h1>` desde el `title`
+  del frontmatter. Duplicarlo da dos `h1` por página (además de romper la
+  semántica de accesibilidad). Para que el título de página y el del menú
+  difieran, usar `title` + `menuTitle`.
 - Publicación: `.github/workflows/docs.yml`, disparado al **pushear un tag `v*`**
   (+ `workflow_dispatch`). El baseURL sale de la API de Pages, no de `hugo.toml`,
   para que un fork o un rename no rompan los enlaces.

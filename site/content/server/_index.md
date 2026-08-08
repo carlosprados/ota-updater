@@ -4,8 +4,6 @@ weight: 30
 description: "Artifacts, the admin control plane, retention, and how RAM stays bounded."
 ---
 
-# Update server
-
 ## Artifacts
 
 An **artifact** is a publication track identified by a `(name, os, arch)`
@@ -32,13 +30,13 @@ rejected at the boundary rather than escaped at each use site.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Declared: artifacts: in server.yaml
+    [*] --> Declared: declared in server.yaml
     [*] --> Published: POST /admin/artifacts
 
     Declared --> Current: republished on every boot<br/><i>config wins over persisted state</i>
     Published --> Current: registered in CAS,<br/>persisted to state_file
 
-    Current --> Current: republish identical bytes<br/><i>no-op: no cache invalidation,<br/>no spurious update</i>
+    Current --> Current: republish identical bytes<br/><i>no-op — no cache invalidation,<br/>no spurious update</i>
 
     Current --> Superseded: new target published
     Superseded --> InHistory: kept as a valid delta source
@@ -139,8 +137,8 @@ flowchart LR
     BUCKET -->|yes| U401["401 Unauthorized"]
     BUCKET -->|no| U429["429 + Retry-After: 1"]
 
-    classDef ok fill:#e6f4ea,stroke:#34a853
-    classDef bad fill:#fce8e6,stroke:#d93025
+    classDef ok fill:#34a8532e,stroke:#34a853
+    classDef bad fill:#d930252e,stroke:#d93025
     class PASS ok
     class U401,U429 bad
 ```
@@ -164,38 +162,41 @@ not a sensible default — and treats two classes of file very differently.
 
 ```mermaid
 flowchart TD
-    START["sweep starts"] --> LIVE["compute live set:<br/>current targets + history"]
-
-    LIVE --> SCAN["scan deltas dir"]
-    SCAN --> PARSE{"filename parses as<br/>{from}_{to}.delta.zst<br/>or {hash}.full.zst?"}
-    PARSE -->|no| LEAVE["<b>leave alone</b><br/><i>not ours: stray temp,<br/>operator note, future format</i>"]
+    SCAN["scan deltas dir"] --> PARSE{"filename parses as<br/>a delta or a full?"}
+    PARSE -->|no| LEAVE["<b>leave alone</b><br/><i>not ours</i>"]
     PARSE -->|yes| R1{"destination still<br/>a current target?"}
-
     R1 -->|no| DEL["delete"]
     R1 -->|yes| R2{"source still in<br/>some history?"}
     R2 -->|no| DEL
     R2 -->|yes| R3{"older than<br/>delta_max_age?"}
     R3 -->|yes| DEL
     R3 -->|no| KEEP["keep"]
-
-    KEEP --> CAP{"deltas dir over<br/>deltas_max_total_mb?"}
+    KEEP --> CAP{"dir over<br/>deltas_max_total_mb?"}
     CAP -->|yes| EVICT["evict oldest first<br/>until it fits"]
-    CAP -->|no| BIN
+    CAP -->|no| DONE["done"]
 
-    DEL --> BIN{"collect_orphan_binaries?"}
-    EVICT --> BIN
-    BIN -->|no| DONE["done"]
-    BIN -->|yes| B1{"referenced by<br/>any artifact?"}
-    B1 -->|yes| DONE
-    B1 -->|no| B2{"older than<br/>orphan_binary_min_age?"}
-    B2 -->|no| DONE
-    B2 -->|yes| DELBIN["delete binary"]
-    DELBIN --> DONE
-
-    classDef del fill:#fce8e6,stroke:#d93025
-    classDef keep fill:#e6f4ea,stroke:#34a853
-    class DEL,EVICT,DELBIN del
+    classDef del fill:#d930252e,stroke:#d93025
+    classDef keep fill:#34a8532e,stroke:#34a853
+    class DEL,EVICT del
     class KEEP,LEAVE keep
+```
+
+Binaries go through a separate, far more conservative pass — and only when
+`collect_orphan_binaries` is set:
+
+```mermaid
+flowchart TD
+    B0{"collect_orphan_binaries?"} -->|no| SKIP["skip entirely"]
+    B0 -->|yes| B1{"referenced by any<br/>artifact or history?"}
+    B1 -->|yes| SKIP
+    B1 -->|no| B2{"older than<br/>orphan_binary_min_age?"}
+    B2 -->|no| SKIP
+    B2 -->|yes| DELBIN["delete binary"]
+
+    classDef del fill:#d930252e,stroke:#d93025
+    classDef keep fill:#34a8532e,stroke:#34a853
+    class DELBIN del
+    class SKIP keep
 ```
 
 | Class | Files | Policy |

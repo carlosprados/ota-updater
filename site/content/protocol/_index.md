@@ -4,8 +4,6 @@ weight: 20
 description: "Wire messages, the two transfer modes, and the exact sequence of an update cycle."
 ---
 
-# Protocol
-
 ## Resource paths
 
 HTTP and CoAP mirror each other exactly — both handlers read their paths from
@@ -106,9 +104,9 @@ flowchart TD
     ALLOW -->|yes| FULLM["<b>full mode</b><br/>binary_endpoint set<br/>signed"]
     ALLOW -->|no| STRAND["UpdateAvailable = false<br/><i>device stays stranded</i>"]
 
-    classDef ok fill:#e6f4ea,stroke:#34a853
-    classDef warn fill:#fef7e0,stroke:#f9ab00
-    classDef bad fill:#fce8e6,stroke:#d93025
+    classDef ok fill:#34a8532e,stroke:#34a853
+    classDef warn fill:#f9ab002e,stroke:#f9ab00
+    classDef bad fill:#d930252e,stroke:#d93025
     class DELTAM,FULLM ok
     class RETRY,NOUP warn
     class E404,STRAND bad
@@ -143,7 +141,7 @@ sequenceDiagram
     A->>S: POST /heartbeat (next cycle)
     S-->>A: signed manifest<br/>{T, delta_hash, signature, delta_endpoint}
 
-    rect rgb(232, 240, 254)
+    rect rgba(66, 133, 244, 0.18)
         Note over A: verify signature BEFORE downloading
         A->>A: Ed25519.Verify(pub, T ‖ delta_hash, sig)
     end
@@ -151,7 +149,7 @@ sequenceDiagram
     A->>S: GET /delta/V/T  (Range-resumable)
     S-->>A: compressed patch bytes
 
-    rect rgb(232, 240, 254)
+    rect rgba(66, 133, 244, 0.18)
         Note over A: verify transfer BEFORE patching
         A->>A: SHA256(bytes) == delta_hash?
     end

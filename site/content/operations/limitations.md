@@ -4,8 +4,6 @@ weight: 51
 description: "What this does not do, and why each gap was left open on purpose."
 ---
 
-# Known limitations
-
 Every item here was analysed and consciously deferred. Listing them is more
 useful than discovering them in production.
 

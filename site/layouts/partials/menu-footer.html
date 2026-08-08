@@ -1,18 +1,30 @@
 {{- /*
-  Overrides the theme default to state which release this build documents.
+  Overrides the theme default to surface two things a reader always wants and
+  otherwise has to hunt for: where the code lives, and which release this
+  build documents.
 
-  The label comes from site.Params.release, which the publish workflow sets
-  from the git tag (HUGO_PARAMS_RELEASE). Without rendering it somewhere, a
-  reader has no way to tell whether the page describes the version they are
-  running — and the parameter would be dead config.
+  The release label comes from site.Params.release, which the publish workflow
+  sets from the git tag (HUGO_PARAMS_RELEASE). It links to that tag on GitHub,
+  so "which version am I reading about" is one click from any page. Local
+  builds fall back to a plain "development build" with no link, since there is
+  no tag to point at.
 */ -}}
+{{- $repo := "https://github.com/carlosprados/ota-updater" -}}
 {{- $release := site.Params.release | default "dev" -}}
-<p class="ota-release">
+<p class="ota-footer">
+  <a href="{{ $repo }}" title="Source code on GitHub">
+    <i class="fab fa-fw fa-github"></i> carlosprados/ota-updater
+  </a>
+  <br>
   {{- if eq $release "dev" -}}
-    <span title="Unreleased build from the working tree">development build</span>
+    <span title="Unreleased build from the working tree">
+      <i class="fas fa-fw fa-code-branch"></i> development build
+    </span>
   {{- else -}}
-    <a href="https://github.com/carlosprados/ota-updater/releases/tag/{{ $release }}"
-       title="Release this documentation was built from">{{ $release }}</a>
+    <a href="{{ $repo }}/releases/tag/{{ $release }}"
+       title="The release this documentation was built from">
+      <i class="fas fa-fw fa-tag"></i> {{ $release }}
+    </a>
   {{- end -}}
 </p>
 <p>Built with <a href="https://github.com/McShelby/hugo-theme-relearn" title="love"><i class="fas fa-heart"></i></a> by <a href="https://gohugo.io/">Hugo</a></p>

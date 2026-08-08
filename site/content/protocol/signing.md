@@ -4,8 +4,6 @@ weight: 21
 description: "What is signed, in what order it is verified, and the threat model."
 ---
 
-# Signature scheme
-
 {{% notice style="info" title="Authoritative source" %}}
 `docs/signing.md` in the repository is the normative document. This page is a
 readable companion; if the two ever disagree, the repository wins.
@@ -53,8 +51,8 @@ flowchart LR
     DTH & DPH --> SIG["<b>same 64-byte payload</b><br/>Ed25519.Sign"]
     FTH & FPH --> SIG
 
-    classDef mode fill:#e8f0fe,stroke:#4285f4
-    classDef sig fill:#e6f4ea,stroke:#34a853
+    classDef mode fill:#4285f42e,stroke:#4285f4
+    classDef sig fill:#34a8532e,stroke:#34a853
     class DT,DTH,DP,DPH,FT,FTH,FP,FPH mode
     class SIG sig
 ```
