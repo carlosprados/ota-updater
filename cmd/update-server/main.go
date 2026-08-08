@@ -65,6 +65,7 @@ func run(cfgPath string) error {
 		TargetCacheBytes:    int64(cfg.Store.TargetCacheMB) << 20,
 		HotDeltaCacheBytes:  int64(cfg.Store.HotDeltaCacheMB) << 20,
 		DeltaConcurrency:    cfg.Store.DeltaConcurrency,
+		DeltaMaxSourceBytes: int64(cfg.Store.DeltaMaxSourceMB) << 20,
 		DiskSpaceMinFreePct: cfg.Store.DiskSpaceMinFreePct,
 		DiskSpaceMinFreeMB:  cfg.Store.DiskSpaceMinFreeMB,
 		Metrics:             metrics,

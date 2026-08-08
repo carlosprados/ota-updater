@@ -29,6 +29,11 @@ import (
 // that version and must fall back to a full download.
 var ErrBinaryNotFound = errors.New("binary not found in store")
 
+// ErrDeltaTooLarge is returned when a requested delta would exceed the
+// configured size budget. Callers should fall back to a full transfer rather
+// than retrying — the condition is static until the artifact changes.
+var ErrDeltaTooLarge = errors.New("delta exceeds the configured size budget")
+
 // Default limits. Tuned so a zero-valued StoreOptions still boots and stays
 // bounded under sustained 24/7 load.
 const (
@@ -69,6 +74,21 @@ type StoreOptions struct {
 	HotDeltaCacheBytes int64
 	// DeltaConcurrency caps concurrent bsdiff generations. 0 → default.
 	DeltaConcurrency int
+	// DeltaMaxSourceBytes refuses to diff any pair where either binary
+	// exceeds this size. 0 disables the cap.
+	//
+	// bsdiff's peak memory is roughly 21x the larger input — measured, not
+	// estimated: 296 MiB for a 13.6 MB binary and 557 MiB for a 27.3 MB one,
+	// scaling linearly. Most of that is the suffix array, two int-per-byte
+	// tables that cannot be paged out because they are computed rather than
+	// file-backed.
+	//
+	// Without a cap, artifact growth turns into an OOM: 50 MB is ~1 GiB per
+	// generation, multiplied by DeltaConcurrency. The cap converts that
+	// failure into a policy — over the limit, no delta is generated and the
+	// manifester serves the whole compressed target instead. The device still
+	// updates; it just spends downlink rather than the server spending RAM.
+	DeltaMaxSourceBytes int64
 	// Metrics, when non-nil, is used by the Store to export inflight
 	// bsdiff gauges and cache stats. Every callsite is nil-safe so tests
 	// and library consumers can skip metrics.
@@ -336,12 +356,56 @@ func (s *Store) HasDelta(fromHash, toHash string) bool {
 	return fileExists(s.DeltaPath(fromHash, toHash))
 }
 
+// CanDiff reports whether a delta between these two binaries is within the
+// configured size budget, and why not when it is false.
+//
+// Callers must consult this BEFORE deciding that a delta is the answer. The
+// manifester in particular has to know: if it dispatched a generation the
+// store then refused, the device would be told "retry later" on every
+// heartbeat, forever — the stranding failure the full-download path exists to
+// remove.
+//
+// A delta that is already cached on disk is always allowed: the memory was
+// spent when it was generated, and serving it costs nothing. Lowering the cap
+// therefore never invalidates work already done.
+func (s *Store) CanDiff(fromHash, toHash string) (bool, string) {
+	if s.opts.DeltaMaxSourceBytes <= 0 {
+		return true, ""
+	}
+	if fileExists(s.DeltaPath(fromHash, toHash)) {
+		return true, ""
+	}
+	for _, b := range []struct {
+		role string
+		hash string
+	}{{"source", fromHash}, {"target", toHash}} {
+		size, err := s.BinarySize(b.hash)
+		if err != nil {
+			// Unknown binary: not a size decision. Let the caller's existing
+			// HasBinary logic decide, rather than reporting a budget failure
+			// for something that is simply absent.
+			continue
+		}
+		if size > s.opts.DeltaMaxSourceBytes {
+			return false, fmt.Sprintf("%s binary is %d MiB, over the %d MiB delta budget",
+				b.role, size>>20, s.opts.DeltaMaxSourceBytes>>20)
+		}
+	}
+	return true, ""
+}
+
 // EnsureDelta returns the on-disk path of the delta from fromHash to
 // toHash, generating and caching it if necessary. Concurrent requests for
 // the same pair are deduplicated via singleflight.
 func (s *Store) EnsureDelta(ctx context.Context, fromHash, toHash string) (string, error) {
 	if p := s.DeltaPath(fromHash, toHash); fileExists(p) {
 		return p, nil
+	}
+	// Enforced here as well as in the manifester: this package is public
+	// surface, and a direct consumer must not be able to allocate the process
+	// to death by asking for a delta between two large binaries.
+	if ok, reason := s.CanDiff(fromHash, toHash); !ok {
+		return "", fmt.Errorf("%w: %s", ErrDeltaTooLarge, reason)
 	}
 	key := fromHash + "_" + toHash
 	v, err, _ := s.genGroup.Do(key, func() (any, error) {
@@ -362,6 +426,11 @@ func (s *Store) EnsureDelta(ctx context.Context, fromHash, toHash string) (strin
 // is tracked by Store.asyncWG so Close(ctx) can wait for it.
 func (s *Store) StartDeltaGeneration(fromHash, toHash string) bool {
 	if fileExists(s.DeltaPath(fromHash, toHash)) || !s.HasBinary(fromHash) || !s.HasBinary(toHash) {
+		return false
+	}
+	if ok, reason := s.CanDiff(fromHash, toHash); !ok {
+		s.logger.Warn("delta generation refused: over the size budget",
+			"op", "delta_generate", "from", fromHash, "to", toHash, "reason", reason)
 		return false
 	}
 	key := fromHash + "_" + toHash
