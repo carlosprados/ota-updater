@@ -1,13 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
-	"io"
-	"log/slog"
 	"math/rand"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -16,55 +13,15 @@ import (
 	"github.com/carlosprados/ota-updater/pkg/delta"
 )
 
-// storeFixture creates a Store with an old binary registered and a target
-// binary whose hash differs by a small mutation. Returns the store and the
-// registered oldHash.
-func storeFixture(t *testing.T) (*Store, string) {
-	t.Helper()
-	tmp := t.TempDir()
-	binDir := filepath.Join(tmp, "binaries")
-	deltaDir := filepath.Join(tmp, "deltas")
-
-	rng := rand.New(rand.NewSource(42))
-	oldBin := make([]byte, 256<<10) // 256 KiB keeps the test under a second
-	_, _ = rng.Read(oldBin)
-
-	newBin := make([]byte, len(oldBin))
-	copy(newBin, oldBin)
-	for i := 0; i < len(newBin); i += 100 {
-		newBin[i] ^= 0x5A
-	}
-
-	targetPath := filepath.Join(tmp, "target.bin")
-	if err := os.WriteFile(targetPath, newBin, 0o644); err != nil {
-		t.Fatalf("write target: %v", err)
-	}
-
-	// silent logger for tests
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s, err := Open(context.Background(), StoreOptions{
-		BinariesDir: binDir, DeltasDir: deltaDir, TargetPath: targetPath,
-	}, logger)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-
-	oldHash, err := s.RegisterBinary(oldBin)
-	if err != nil {
-		t.Fatalf("RegisterBinary: %v", err)
-	}
-	return s, oldHash
-}
-
 func TestStore_EnsureDelta_RoundTrip(t *testing.T) {
-	s, oldHash := storeFixture(t)
+	s, oldHash, targetHash := storeFixture(t)
 	ctx := context.Background()
 
-	path, err := s.EnsureDelta(ctx, oldHash)
+	path, err := s.EnsureDelta(ctx, oldHash, targetHash)
 	if err != nil {
 		t.Fatalf("EnsureDelta: %v", err)
 	}
-	if path != s.DeltaPath(oldHash, s.TargetHash()) {
+	if path != s.DeltaPath(oldHash, targetHash) {
 		t.Fatalf("unexpected delta path: %s", path)
 	}
 
@@ -73,30 +30,34 @@ func TestStore_EnsureDelta_RoundTrip(t *testing.T) {
 		t.Fatalf("read delta: %v", err)
 	}
 
-	oldBin, err := s.loadBinary(oldHash)
+	oldBin, err := s.LoadBinary(oldHash)
 	if err != nil {
-		t.Fatalf("loadBinary: %v", err)
+		t.Fatalf("LoadBinary(old): %v", err)
+	}
+	targetBin, err := s.LoadBinary(targetHash)
+	if err != nil {
+		t.Fatalf("LoadBinary(target): %v", err)
 	}
 	reconstructed, err := delta.Apply(oldBin, compressed)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if sha256.Sum256(reconstructed) != sha256.Sum256(s.TargetBinary()) {
-		t.Fatalf("reconstructed hash != target hash")
+	if !bytes.Equal(reconstructed, targetBin) {
+		t.Fatalf("reconstructed binary differs from target")
 	}
 }
 
 func TestStore_EnsureDelta_CachedShortCircuit(t *testing.T) {
-	s, oldHash := storeFixture(t)
+	s, oldHash, targetHash := storeFixture(t)
 	ctx := context.Background()
 
-	first, err := s.EnsureDelta(ctx, oldHash)
+	first, err := s.EnsureDelta(ctx, oldHash, targetHash)
 	if err != nil {
 		t.Fatalf("first EnsureDelta: %v", err)
 	}
 	info1, _ := os.Stat(first)
 
-	second, err := s.EnsureDelta(ctx, oldHash)
+	second, err := s.EnsureDelta(ctx, oldHash, targetHash)
 	if err != nil {
 		t.Fatalf("second EnsureDelta: %v", err)
 	}
@@ -108,8 +69,8 @@ func TestStore_EnsureDelta_CachedShortCircuit(t *testing.T) {
 }
 
 func TestStore_EnsureDelta_UnknownSource(t *testing.T) {
-	s, _ := storeFixture(t)
-	_, err := s.EnsureDelta(context.Background(), "deadbeef")
+	s, _, targetHash := storeFixture(t)
+	_, err := s.EnsureDelta(context.Background(), "deadbeef", targetHash)
 	if err == nil {
 		t.Fatalf("expected ErrBinaryNotFound, got nil")
 	}
@@ -118,7 +79,7 @@ func TestStore_EnsureDelta_UnknownSource(t *testing.T) {
 // TestStore_EnsureDelta_Concurrent exercises singleflight dedup: N goroutines
 // request the same delta simultaneously; all must succeed with valid patches.
 func TestStore_EnsureDelta_Concurrent(t *testing.T) {
-	s, oldHash := storeFixture(t)
+	s, oldHash, targetHash := storeFixture(t)
 	ctx := context.Background()
 
 	const n = 16
@@ -130,7 +91,7 @@ func TestStore_EnsureDelta_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p, err := s.EnsureDelta(ctx, oldHash)
+			p, err := s.EnsureDelta(ctx, oldHash, targetHash)
 			if err != nil {
 				errs <- err
 				return
@@ -145,7 +106,7 @@ func TestStore_EnsureDelta_Concurrent(t *testing.T) {
 	for err := range errs {
 		t.Errorf("concurrent EnsureDelta: %v", err)
 	}
-	expected := s.DeltaPath(oldHash, s.TargetHash())
+	expected := s.DeltaPath(oldHash, targetHash)
 	for p := range paths {
 		if p != expected {
 			t.Errorf("unexpected delta path %s, want %s", p, expected)
@@ -154,7 +115,7 @@ func TestStore_EnsureDelta_Concurrent(t *testing.T) {
 }
 
 func TestStore_Close_WaitsForAsyncGenerations(t *testing.T) {
-	s, oldHash := storeFixture(t)
+	s, oldHash, targetHash := storeFixture(t)
 
 	// Kick off an async generation. StartDeltaGeneration returns true once,
 	// then goes no-op if the delta is already cached — use a fresh source
@@ -166,11 +127,11 @@ func TestStore_Close_WaitsForAsyncGenerations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterBinary: %v", err)
 	}
-	if !s.StartDeltaGeneration(otherHash) {
+	if !s.StartDeltaGeneration(otherHash, targetHash) {
 		t.Fatalf("StartDeltaGeneration should have dispatched")
 	}
 	// Also dispatch the original fixture pair just for good measure.
-	_ = s.StartDeltaGeneration(oldHash)
+	_ = s.StartDeltaGeneration(oldHash, targetHash)
 
 	// Close with a generous timeout. Must wait for both goroutines and
 	// return nil. The delta files must exist on disk afterwards.
@@ -179,13 +140,13 @@ func TestStore_Close_WaitsForAsyncGenerations(t *testing.T) {
 	if err := s.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if !s.HasDelta(otherHash) {
+	if !s.HasDelta(otherHash, targetHash) {
 		t.Fatalf("async delta for otherHash should have been written before Close returned")
 	}
 }
 
 func TestStore_Close_NoAsyncWork_ReturnsImmediately(t *testing.T) {
-	s, _ := storeFixture(t)
+	s, _, _ := storeFixture(t)
 	// Nothing dispatched → Close must return right away regardless of the
 	// context deadline.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -207,7 +168,7 @@ func TestStore_Close_NoAsyncWork_ReturnsImmediately(t *testing.T) {
 // — the real StartDeltaGeneration always decrements via defer, so this
 // cannot deadlock beyond the test.
 func TestStore_Close_ContextCancelled_ReturnsContextErr(t *testing.T) {
-	s, _ := storeFixture(t)
+	s, _, _ := storeFixture(t)
 	// Manually add to the wg to simulate a pending async task that
 	// outlives our context. Done it inside a goroutine so we can resolve
 	// at the end of the test.
@@ -222,11 +183,8 @@ func TestStore_Close_ContextCancelled_ReturnsContextErr(t *testing.T) {
 	}
 }
 
-var _ = sync.Mutex{} // pin sync import (kept from earlier tests)
-var _ = time.Second  // pin time import for t.Second
-
 func TestStore_HasBinary_MissCacheAbsorbsRepeatedStats(t *testing.T) {
-	s, _ := storeFixture(t)
+	s, _, _ := storeFixture(t)
 	// Pick a hash the store definitely doesn't have.
 	missing := "deadbeef" + strings.Repeat("0", 56)
 
@@ -269,7 +227,7 @@ func TestStore_HasBinary_MissCacheAbsorbsRepeatedStats(t *testing.T) {
 }
 
 func TestStore_HasBinary_MissCacheBounded(t *testing.T) {
-	s, _ := storeFixture(t)
+	s, _, _ := storeFixture(t)
 	// Fill well beyond the cap with unique absent hashes.
 	for i := 0; i < hasBinaryMissCap+50; i++ {
 		h := "absent" + strings.Repeat("f", 58) + string([]byte{'a' + byte(i%26)})

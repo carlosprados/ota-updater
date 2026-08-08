@@ -20,7 +20,8 @@ coap:
 store:
   binaries_dir: "/tmp/ota-demo/store/binaries"
   deltas_dir: "/tmp/ota-demo/store/deltas"
-  target_max_memory_mb: 100
+  state_file: "/tmp/ota-demo/store/artifacts.json"
+  target_cache_mb: 100
   hot_delta_cache_mb: 128
   delta_concurrency: 2
   # 0 disables; /tmp is ephemeral and the warning would be noise
@@ -30,9 +31,18 @@ store:
 crypto:
   private_key: "/tmp/ota-demo/keys/server.key"
 
-target:
-  version: "1.0.0"
-  binary: "/tmp/ota-demo/target.bin"
+# The demo runs a single artifact. The legacy `target:` block would also
+# work (it folds into an artifact named "default"), but spelling it out
+# keeps the demo aligned with what a real multi-component deployment looks
+# like.
+artifacts:
+  - name: "demo-app"
+    os: "linux"
+    arch: "amd64"
+    version: "1.0.0"
+    binary: "/tmp/ota-demo/target.bin"
+
+default_artifact: "demo-app/linux/amd64"
 
 admin:
   # Demo token (32+ chars, hex-like). In production: `openssl rand -hex 16`.

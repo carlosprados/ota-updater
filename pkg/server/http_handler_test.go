@@ -18,24 +18,34 @@ import (
 
 // httpFixture sets up a running test server with a pre-cached delta so Range
 // and ServeContent paths are exercisable.
-func httpFixture(t *testing.T) (baseURL string, pub []byte, s *Store, oldHash string, close func()) {
+func httpFixture(t *testing.T) (base string, f *serverFixture, done func()) {
 	t.Helper()
-	m, pubKey, store, oh := manifesterFixture(t)
-	if _, err := store.EnsureDelta(context.Background(), oh); err != nil {
+	f = newServerFixture(t)
+	if _, err := f.Store.EnsureDelta(context.Background(), f.OldHash, f.TargetHash); err != nil {
 		t.Fatalf("EnsureDelta: %v", err)
 	}
-	h := NewHTTPHandler(HTTPConfig{Store: store, Manifester: m, Logger: nil})
-	srv := httptest.NewServer(h)
-	return srv.URL, pubKey, store, oh, srv.Close
+	return newHTTPTestServer(t, f), f, func() {}
+}
+
+// newHTTPTestServer mounts the handler over f and returns its base URL. The
+// server is torn down via t.Cleanup so callers cannot forget.
+func newHTTPTestServer(t *testing.T, f *serverFixture) string {
+	t.Helper()
+	srv := httptest.NewServer(NewHTTPHandler(HTTPConfig{
+		Store: f.Store, Registry: f.Registry, Manifester: f.Manifester, Logger: testLogger(),
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 func TestHTTP_Heartbeat_Current(t *testing.T) {
-	base, _, s, _, done := httpFixture(t)
+	base, f, done := httpFixture(t)
 	defer done()
 
 	body, _ := json.Marshal(protocol.Heartbeat{
 		DeviceID:    "dev-1",
-		VersionHash: s.TargetHash(),
+		VersionHash: f.TargetHash,
+		Artifact:    testArtifact.String(),
 	})
 	resp, err := http.Post(base+protocol.PathHeartbeat, "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -56,10 +66,10 @@ func TestHTTP_Heartbeat_Current(t *testing.T) {
 }
 
 func TestHTTP_Heartbeat_CachedSignature(t *testing.T) {
-	base, pub, s, oldHash, done := httpFixture(t)
+	base, f, done := httpFixture(t)
 	defer done()
 
-	body, _ := json.Marshal(protocol.Heartbeat{DeviceID: "dev-1", VersionHash: oldHash})
+	body, _ := json.Marshal(protocol.Heartbeat{DeviceID: "dev-1", VersionHash: f.OldHash, Artifact: testArtifact.String()})
 	resp, err := http.Post(base+protocol.PathHeartbeat, "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST heartbeat: %v", err)
@@ -81,20 +91,20 @@ func TestHTTP_Heartbeat_CachedSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode sig: %v", err)
 	}
-	if err := crypto.Verify(pub, payload, sig); err != nil {
+	if err := crypto.Verify(f.Pub, payload, sig); err != nil {
 		t.Fatalf("signature verify failed: %v", err)
 	}
-	wantEndpoint := protocol.DeltaPath(oldHash, s.TargetHash())
+	wantEndpoint := protocol.DeltaPath(f.OldHash, f.TargetHash)
 	if mr.DeltaEndpoint != wantEndpoint {
 		t.Fatalf("DeltaEndpoint=%s, want %s", mr.DeltaEndpoint, wantEndpoint)
 	}
 }
 
 func TestHTTP_Delta_FullDownload(t *testing.T) {
-	base, _, s, oldHash, done := httpFixture(t)
+	base, f, done := httpFixture(t)
 	defer done()
 
-	url := base + protocol.DeltaPath(oldHash, s.TargetHash())
+	url := base + protocol.DeltaPath(f.OldHash, f.TargetHash)
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET delta: %v", err)
@@ -116,10 +126,10 @@ func TestHTTP_Delta_FullDownload(t *testing.T) {
 }
 
 func TestHTTP_Delta_Range(t *testing.T) {
-	base, _, s, oldHash, done := httpFixture(t)
+	base, f, done := httpFixture(t)
 	defer done()
 
-	url := base + protocol.DeltaPath(oldHash, s.TargetHash())
+	url := base + protocol.DeltaPath(f.OldHash, f.TargetHash)
 	// full fetch first to know the expected slice
 	full, _ := http.Get(url)
 	fullBody, _ := io.ReadAll(full.Body)
@@ -144,12 +154,8 @@ func TestHTTP_Delta_Range(t *testing.T) {
 func TestHTTP_Delta_404_TriggersAsync(t *testing.T) {
 	// Build a fresh fixture WITHOUT pre-generating the delta so we can
 	// verify the 404 path dispatches async generation.
-	m, _, s, oldHash := manifesterFixture(t)
-	h := NewHTTPHandler(HTTPConfig{Store: s, Manifester: m})
-	srv := httptest.NewServer(h)
-	defer srv.Close()
-
-	url := srv.URL + protocol.DeltaPath(oldHash, s.TargetHash())
+	f := newServerFixture(t)
+	url := newHTTPTestServer(t, f) + protocol.DeltaPath(f.OldHash, f.TargetHash)
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET delta: %v", err)
@@ -162,7 +168,7 @@ func TestHTTP_Delta_404_TriggersAsync(t *testing.T) {
 	// Async generation should populate the cache shortly.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if s.HasDelta(oldHash) {
+		if f.Store.HasDelta(f.OldHash, f.TargetHash) {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -171,7 +177,7 @@ func TestHTTP_Delta_404_TriggersAsync(t *testing.T) {
 }
 
 func TestHTTP_Delta_InvalidHashSegment(t *testing.T) {
-	base, _, _, _, done := httpFixture(t)
+	base, _, done := httpFixture(t)
 	defer done()
 
 	resp, err := http.Get(base + "/delta/NOTHEX/" + strings.Repeat("a", 64))
@@ -185,7 +191,7 @@ func TestHTTP_Delta_InvalidHashSegment(t *testing.T) {
 }
 
 func TestHTTP_Report(t *testing.T) {
-	base, _, _, _, done := httpFixture(t)
+	base, _, done := httpFixture(t)
 	defer done()
 
 	body, _ := json.Marshal(protocol.UpdateReport{
@@ -202,7 +208,7 @@ func TestHTTP_Report(t *testing.T) {
 }
 
 func TestHTTP_Health(t *testing.T) {
-	base, _, s, _, done := httpFixture(t)
+	base, f, done := httpFixture(t)
 	defer done()
 
 	resp, err := http.Get(base + protocol.PathHealth)
@@ -213,9 +219,18 @@ func TestHTTP_Health(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
-	var body map[string]any
-	_ = json.NewDecoder(resp.Body).Decode(&body)
-	if body["target_hash"] != s.TargetHash() {
-		t.Fatalf("target_hash mismatch in health")
+	var body struct {
+		Status    string            `json:"status"`
+		Artifacts map[string]string `json:"artifacts"`
+		Default   string            `json:"default"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	if body.Artifacts[testArtifact.String()] != f.TargetHash {
+		t.Fatalf("health does not report the artifact target: %+v", body)
+	}
+	if body.Default != testArtifact.String() {
+		t.Fatalf("health default = %q, want %q", body.Default, testArtifact)
 	}
 }

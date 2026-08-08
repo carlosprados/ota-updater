@@ -21,16 +21,18 @@ import (
 )
 
 // coapFixture spins up an in-process CoAP server on an ephemeral UDP port.
-// If preGenerate is true the delta for oldHash is cached before returning.
-func coapFixture(t *testing.T, preGenerate bool) (addr string, pub []byte, s *Store, oldHash string, teardown func()) {
+// If preGenerate is true the delta for f.OldHash is cached before returning.
+func coapFixture(t *testing.T, preGenerate bool) (addr string, f *serverFixture, teardown func()) {
 	t.Helper()
-	m, pubKey, store, oh := manifesterFixture(t)
+	f = newServerFixture(t)
 	if preGenerate {
-		if _, err := store.EnsureDelta(context.Background(), oh); err != nil {
+		if _, err := f.Store.EnsureDelta(context.Background(), f.OldHash, f.TargetHash); err != nil {
 			t.Fatalf("EnsureDelta: %v", err)
 		}
 	}
-	router, err := NewCoAPRouter(CoAPConfig{Store: store, Manifester: m})
+	router, err := NewCoAPRouter(CoAPConfig{
+		Store: f.Store, Registry: f.Registry, Manifester: f.Manifester, Logger: testLogger(),
+	})
 	if err != nil {
 		t.Fatalf("NewCoAPRouter: %v", err)
 	}
@@ -51,7 +53,7 @@ func coapFixture(t *testing.T, preGenerate bool) (addr string, pub []byte, s *St
 		_ = l.Close()
 		<-done
 	}
-	return l.LocalAddr().String(), pubKey, store, oh, teardown
+	return l.LocalAddr().String(), f, teardown
 }
 
 func coapDial(t *testing.T, addr string) *udpClient.Conn {
@@ -64,14 +66,14 @@ func coapDial(t *testing.T, addr string) *udpClient.Conn {
 }
 
 func TestCoAP_Heartbeat_Current(t *testing.T) {
-	addr, _, s, _, done := coapFixture(t, false)
+	addr, f, done := coapFixture(t, false)
 	defer done()
 
 	co := coapDial(t, addr)
 	defer co.Close()
 
 	body, _ := cbor.Marshal(protocol.Heartbeat{
-		DeviceID: "dev-1", VersionHash: s.TargetHash(),
+		DeviceID: "dev-1", VersionHash: f.TargetHash,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -94,13 +96,13 @@ func TestCoAP_Heartbeat_Current(t *testing.T) {
 }
 
 func TestCoAP_Heartbeat_CachedSignature(t *testing.T) {
-	addr, pub, s, oldHash, done := coapFixture(t, true)
+	addr, f, done := coapFixture(t, true)
 	defer done()
 
 	co := coapDial(t, addr)
 	defer co.Close()
 
-	body, _ := cbor.Marshal(protocol.Heartbeat{DeviceID: "dev-1", VersionHash: oldHash})
+	body, _ := cbor.Marshal(protocol.Heartbeat{DeviceID: "dev-1", VersionHash: f.OldHash, Artifact: testArtifact.String()})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -117,7 +119,7 @@ func TestCoAP_Heartbeat_CachedSignature(t *testing.T) {
 	if !mr.UpdateAvailable || mr.Signature == "" {
 		t.Fatalf("expected signed manifest, got %+v", mr)
 	}
-	if mr.TargetHash != s.TargetHash() {
+	if mr.TargetHash != f.TargetHash {
 		t.Fatalf("TargetHash mismatch")
 	}
 
@@ -129,13 +131,13 @@ func TestCoAP_Heartbeat_CachedSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode sig: %v", err)
 	}
-	if err := crypto.Verify(pub, signingPayload, sig); err != nil {
+	if err := crypto.Verify(f.Pub, signingPayload, sig); err != nil {
 		t.Fatalf("signature verify failed (CoAP path): %v", err)
 	}
 }
 
 func TestCoAP_Delta_FullDownload(t *testing.T) {
-	addr, _, s, oldHash, done := coapFixture(t, true)
+	addr, f, done := coapFixture(t, true)
 	defer done()
 
 	co := coapDial(t, addr)
@@ -144,7 +146,7 @@ func TestCoAP_Delta_FullDownload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	resp, err := co.Get(ctx, protocol.DeltaPath(oldHash, s.TargetHash()))
+	resp, err := co.Get(ctx, protocol.DeltaPath(f.OldHash, f.TargetHash))
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -161,7 +163,7 @@ func TestCoAP_Delta_FullDownload(t *testing.T) {
 }
 
 func TestCoAP_Delta_404_TriggersAsync(t *testing.T) {
-	addr, _, s, oldHash, done := coapFixture(t, false)
+	addr, f, done := coapFixture(t, false)
 	defer done()
 
 	co := coapDial(t, addr)
@@ -170,7 +172,7 @@ func TestCoAP_Delta_404_TriggersAsync(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := co.Get(ctx, protocol.DeltaPath(oldHash, s.TargetHash()))
+	resp, err := co.Get(ctx, protocol.DeltaPath(f.OldHash, f.TargetHash))
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -180,7 +182,7 @@ func TestCoAP_Delta_404_TriggersAsync(t *testing.T) {
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if s.HasDelta(oldHash) {
+		if f.Store.HasDelta(f.OldHash, f.TargetHash) {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -189,7 +191,7 @@ func TestCoAP_Delta_404_TriggersAsync(t *testing.T) {
 }
 
 func TestCoAP_Report(t *testing.T) {
-	addr, _, _, _, done := coapFixture(t, false)
+	addr, _, done := coapFixture(t, false)
 	defer done()
 
 	co := coapDial(t, addr)

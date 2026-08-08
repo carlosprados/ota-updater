@@ -34,8 +34,8 @@ Licensed under [Apache 2.0](LICENSE). See
 
 | What | Where | Role |
 |---|---|---|
-| `update-server` | `cmd/update-server/` | Serves signed manifests and compressed delta patches over HTTP and CoAP. fsnotify auto-reload; admin control plane (`/admin/reload`, `/admin/loglevel`) behind a Bearer token. |
-| `edge-agent` | `cmd/edge-agent/` | Runs on the device. Heartbeats, downloads deltas, applies patches, manages A/B slots and rollback. Will also be available as a Go library (`pkg/agent/`) so any Go executable can embed update logic. |
+| `update-server` | `cmd/update-server/` | Serves signed manifests, compressed delta patches and whole-binary fallbacks over HTTP and CoAP, for any number of artifacts. fsnotify auto-reload; admin control plane behind a Bearer token; optional retention sweeper. Importable as `pkg/server`. |
+| `edge-agent` | `cmd/edge-agent/` | Runs on the device. Heartbeats, downloads deltas (or whole binaries), applies patches, manages A/B slots and rollback. Also available as a Go library (`pkg/agent/`) so any Go executable can embed update logic. |
 | `keygen` | `tools/keygen/` | Generates the Ed25519 keypair once. |
 
 ## Prerequisites
@@ -81,21 +81,23 @@ task keygen
 # 1. Build your new target binary (any Go executable).
 go build -o my-new-binary ./...
 
-# 2. Drop it into the target location configured in server.yaml
-#    (defaults to ./store/binaries/latest).
+# 2. Drop it into the artifact's `binary` path from server.yaml.
 cp my-new-binary ./store/binaries/latest
 ```
 
 That's it. The server picks up the change **without restart**:
 
-- An `fsnotify` watcher on the target path auto-reloads within a few
-  hundred milliseconds.
-- Alternatively, your CI/CD can call the admin endpoint explicitly
-  (see below).
+- An `fsnotify` watcher on each artifact's `binary` path auto-reloads
+  within a few hundred milliseconds.
+- Alternatively, your CI/CD can call the admin endpoint explicitly:
+  `POST /admin/reload` for everything, or
+  `POST /admin/reload {"artifact":"agent/linux/arm64"}` for one track —
+  so deploying one component never disturbs the others.
 
-The server then computes the new `target_hash`, regenerates deltas
-on-demand as agents check in, and signs each manifest on the fly with
-the in-memory private key. **No per-release signing command to run.**
+The server then computes the new `target_hash` for that artifact,
+regenerates deltas on-demand as agents check in, and signs each manifest
+on the fly with the in-memory private key. **No per-release signing
+command to run.**
 
 ### Running the server
 
@@ -105,9 +107,10 @@ task build-server
 ```
 
 An example config ships at `configs/server.yaml`. Minimum required
-fields: `crypto.private_key`, `target.binary`, `admin.token`. The rest
-have sensible defaults (HTTP on `:8080`, CoAP on `:5683`, text logs at
-INFO). Send `SIGINT` or `SIGTERM` for a graceful shutdown that honors
+fields: `crypto.private_key`, `admin.token`, and at least one entry under
+`artifacts:` (or a legacy `target.binary`). The rest have sensible
+defaults (HTTP on `:8080`, CoAP on `:5683`, text logs at INFO). Send
+`SIGINT` or `SIGTERM` for a graceful shutdown that honors
 `http.shutdown_timeout` (default `15s`).
 
 ---
@@ -160,21 +163,88 @@ Explicit reload trigger — useful in CI/CD pipelines that want synchronous
 confirmation rather than waiting for the filesystem watcher.
 
 ```sh
+# Reload every file-backed artifact.
 curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://update.example.com:8080/admin/reload
+
+# Reload just one track — a per-component pipeline should always do this,
+# so deploying one service never republishes the others.
+curl -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"artifact":"keystone-agent/linux/arm64"}' \
   http://update.example.com:8080/admin/reload
 ```
 
 Responses:
 
-- `200 OK` → `{"target_hash": "<new-sha>", "previous_hash": "<old-sha>"}`.
+- `200 OK` → `{"reloaded": {"<artifact>": "<new-target-hash>", …}}`.
+- `400 Bad Request` for a malformed artifact key.
 - `401 Unauthorized` on auth failure.
-- `500 Internal Server Error` if the reload itself failed (e.g. target
+- `404 Not Found` for an unknown artifact, or when no artifact is
+  file-backed.
+- `500 Internal Server Error` if the reload itself failed (e.g. source
   file missing). The previous target remains active — the server never
   ends up in a broken state.
 
-The reload also invalidates the in-memory signed-manifest cache so the
-next heartbeat produces a manifest signed over the new `target_hash`.
+A reload that changes a target also invalidates the in-memory
+signed-manifest cache, so the next heartbeat produces a manifest signed
+over the new `target_hash`.
+
+### `GET|POST|DELETE /admin/artifacts`
+
+Manage publication tracks without editing YAML or restarting.
+
+```sh
+# List every track and which one answers unnamed heartbeats.
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://update.example.com:8080/admin/artifacts
+
+# Publish (or update) a track from a path on the server's filesystem.
+curl -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"keystone-proxy","os":"linux","arch":"amd64",
+       "version":"3.1.0","binary":"/srv/artifacts/proxy-amd64"}' \
+  http://update.example.com:8080/admin/artifacts
+
+# Retire a track. The bytes stay in the store until retention collects
+# them, so this is cheap to undo.
+curl -X DELETE \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://update.example.com:8080/admin/artifacts?artifact=keystone-proxy/linux/amd64"
+```
+
+Artifacts published this way persist across restarts via
+`store.state_file`. Artifacts **declared in YAML** are re-published from
+their `binary` path on every boot, so config always wins for the tracks
+it names.
+
+### `POST /admin/default`
+
+Choose which track answers heartbeats that carry no `artifact` field.
+
+```sh
+curl -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"artifact":"keystone-agent/linux/arm64"}' \
+  http://update.example.com:8080/admin/default
+```
+
+### `POST /admin/gc`
+
+Run a retention sweep immediately instead of waiting for the next tick.
+Returns what it reclaimed. Answers `404` when `retention.enabled` is
+false.
+
+```sh
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://update.example.com:8080/admin/gc
+# {"DeltasDeleted":12,"FullsDeleted":1,"BinariesDeleted":0,
+#  "BytesReclaimed":48210944,"Scanned":40,"Duration":11000000}
+```
 
 ### `POST /admin/loglevel`
 
@@ -198,13 +268,188 @@ Responses:
 
 ### Operational notes
 
-- Old cached deltas (`{from}_{oldTarget}.delta.zst`) remain on disk
-  after a reload but are never served: the new `target_hash` makes them
-  unreachable. Prune manually or via future tooling.
+- Old cached deltas (`{from}_{oldTarget}.delta.zst`) are never served
+  after a reload: agents only ever request deltas toward a *current*
+  target, so the new `target_hash` makes them unreachable. Enable
+  `retention` (see below) to reclaim their disk space.
 - The server caps body size (4 KiB) on heartbeat/report, panic-recovers
   every handler into a structured 500/5.00 response, and bounds
   concurrent bsdiff runs to protect CPU/RAM under bursty load from many
   distinct source versions.
+
+---
+
+## Artifacts (N components x M versions x K architectures)
+
+One update-server serves any number of independently-versioned artifacts.
+An **artifact** is a publication track identified by a `(name, os, arch)`
+triple; the server holds exactly one current target per track.
+
+```
+keystone-agent/linux/arm64     <- one track
+keystone-agent/linux/amd64     <- a different track, its own target
+keystone-proxy/linux/arm64     <- another component entirely
+tariff-table                   <- platform-independent: no os/arch
+```
+
+`os` and `arch` are optional but **coupled**: set both or neither. The
+charset is deliberately narrow (`[A-Za-z0-9._-]` for names, `[a-z0-9]`
+for platform tokens, no `.` or `..`), because keys reach HTTP paths,
+retention bookkeeping and log fields.
+
+Declare tracks in `server.yaml`:
+
+```yaml
+artifacts:
+  - name: "keystone-agent"
+    os: "linux"
+    arch: "arm64"
+    version: "1.4.2"
+    binary: "/srv/artifacts/keystone-agent-linux-arm64"
+  - name: "keystone-agent"
+    os: "linux"
+    arch: "amd64"
+    version: "1.4.2"
+    binary: "/srv/artifacts/keystone-agent-linux-amd64"
+default_artifact: "keystone-agent/linux/arm64"
+```
+
+...or publish them at runtime through `POST /admin/artifacts`.
+
+Each agent names its track in the heartbeat:
+
+```yaml
+device:
+  artifact: "keystone-agent/linux/arm64"
+```
+
+An **empty** `artifact` resolves to `default_artifact`. That is what keeps
+single-artifact deployments — and agents built before multi-artifact
+support existed — working with no change at all. Likewise a bare
+`target:` block in `server.yaml` is still accepted and folded into one
+track named `default`.
+
+### Why this costs almost nothing in storage
+
+The store is **content-addressed**: binaries live at `{sha256}.bin` and
+deltas at `{from}_{to}.delta.zst`. Those keys are globally unique, so two
+tracks that happen to ship identical bytes share one file, and a delta is
+identified by its pair regardless of which artifact requested it. Adding
+artifacts multiplies *bookkeeping*, not *bytes*.
+
+The registry — "which hash is current for which track" — is the only
+per-artifact state, and it persists to `store.state_file` so anything
+published through the admin API survives a restart.
+
+### One Updater per artifact
+
+`agent.Updater` follows exactly one artifact. An embedder that manages
+several components runs one `Updater` per component: they can share a
+`ProtocolClient`, but each needs its own slots directory and state
+directory.
+
+---
+
+## Full-download fallback
+
+Delta updates have a structural precondition: the server must still hold
+the exact bytes the device is running. That fails for real devices in
+ordinary ways —
+
+- factory-flashed units the server has never seen,
+- sideloaded or locally-built binaries,
+- versions whose source binary aged out of retention,
+- a device whose active slot is corrupt.
+
+Previously such a device got `update_available: false` on every heartbeat,
+forever: a silent, permanent strand that looks like a healthy fleet in the
+logs. Now the server falls back to shipping the **whole target**, zstd
+compressed, via `binary_endpoint` instead of `delta_endpoint`.
+
+The agent's flow is nearly identical: verify the signature, download,
+check the transfer hash, then **decompress instead of patching**. Notably
+it never reads its own active slot on this path, which is why it also
+recovers a device with a damaged binary.
+
+The signature scheme is unchanged. The signed payload has always been
+`(target_hash, hash-of-the-bytes-on-the-wire)`; in full mode those bytes
+are the compressed target rather than a patch. See
+[`docs/signing.md` §2.2](docs/signing.md) for the threat-model analysis,
+including why a tampered mode flag fails safe.
+
+Watch `updater_deltas_served_total{mode="full"}`: a rising full/delta
+ratio means retention is evicting source binaries your fleet still needs,
+and you should raise `retention.history_depth`.
+
+To disable — only sensible when downlink is so scarce that a full transfer
+is never acceptable *and* you handle stranded devices out of band:
+
+```yaml
+manifest:
+  allow_full_download: false
+```
+
+---
+
+## Retention (bounding disk growth)
+
+Nothing in the store is ever overwritten, so without a sweeper every
+release adds a binary plus one delta per source version still in the
+field. Across N components x K architectures that growth is
+multiplicative, and a full filesystem fails writes mid-campaign.
+
+Retention is **off by default** — silently deleting an operator's
+binaries is not a sensible default — and distinguishes two classes of
+file:
+
+| Class | Files | Policy |
+|---|---|---|
+| **Derived cache** | `{from}_{to}.delta.zst`, `{hash}.full.zst` | Collected aggressively. Deleting one costs CPU to regenerate and nothing else. |
+| **Binaries** | `{hash}.bin` | The only copy of something you produced. Collected only with an explicit opt-in, only when unreferenced, and only after a grace period. |
+
+```yaml
+retention:
+  enabled: true
+  interval: "6h"
+  history_depth: 10            # superseded targets kept as delta sources
+  delta_max_age: "720h"        # 0 disables
+  deltas_max_total_mb: 0       # 0 disables; oldest evicted first
+  collect_orphan_binaries: false
+  orphan_binary_min_age: "24h"
+```
+
+The rules, in the order they fire:
+
+1. A delta whose **destination** is no longer any artifact's current
+   target is unreachable by construction — agents only ever ask for
+   deltas toward a current target — and is deleted.
+2. A delta whose **source** is in no artifact's history is deleted:
+   any device still on that version now takes the full-download path.
+3. Anything older than `delta_max_age` is deleted.
+4. If `deltas_max_total_mb` is exceeded, the oldest survivors are evicted
+   until it fits.
+5. With `collect_orphan_binaries`, binaries referenced by no artifact
+   (current target or history) and older than `orphan_binary_min_age` are
+   deleted.
+
+Two properties worth internalising:
+
+- **Collecting a binary never strands a device.** An agent still running
+  it falls back to a full download. The cost is downlink, not
+  availability — which is why `history_depth` is a tuning knob and not a
+  correctness requirement.
+- **The sweeper only touches files it can parse.** A stray note, a temp
+  file, or a future format in `binaries_dir`/`deltas_dir` is left alone
+  and logged at DEBUG. Both hash segments are validated as SHA-256 hex,
+  so a crafted filename cannot widen what gets deleted.
+
+The `orphan_binary_min_age` grace period exists for a specific race:
+`RegisterBinary` writes the file before the `Publish` that references it,
+and a sweep landing between the two would delete a binary seconds away
+from becoming a target.
+
+Run one on demand with `POST /admin/gc`; watch
+`updater_retention_*` for what it reclaims.
 
 ---
 
@@ -620,16 +865,21 @@ The server publishes standard `go_*` / `process_*` collectors plus:
 |---|---|---|---|
 | `updater_heartbeats_total` | counter | `transport`, `result` | `result` ∈ `none` · `update` · `retry` · `bad_request` · `error`. |
 | `updater_heartbeat_duration_seconds` | histogram | `transport` | Server-side wall time per heartbeat. |
-| `updater_deltas_served_total` | counter | `transport`, `hot_hit` | `hot_hit` ∈ `hit`/`miss`. Watch this to size `hot_delta_cache_mb`. |
-| `updater_delta_serve_duration_seconds` | histogram | `transport` | Includes hot-miss disk reads. |
+| `updater_deltas_served_total` | counter | `transport`, `hot_hit`, `mode` | `hot_hit` ∈ `hit`/`miss` — watch it to size `hot_delta_cache_mb`. `mode` ∈ `delta`/`full`; a rising `full` share means retention is evicting source binaries the fleet still needs. |
+| `updater_delta_serve_duration_seconds` | histogram | `transport`, `mode` | Includes hot-miss disk reads. |
 | `updater_delta_generations_total` | counter | `result` | `ok` / `error`. |
 | `updater_delta_generate_duration_seconds` | histogram | — | Wall time of bsdiff runs (bounded by `delta_concurrency`). |
 | `updater_async_generations_inflight` | gauge | — | Concurrent bsdiff goroutines. Sustained high = bump concurrency or investigate thundering herds. |
 | `updater_manifest_cache_entries` | gauge | — | Signed-manifest LRU occupancy. |
 | `updater_hot_delta_cache_bytes` | gauge | — | Current bytes held in the hot delta LRU. |
 | `updater_hot_delta_cache_entries` | gauge | — | Hot delta LRU occupancy. |
-| `updater_target_binary_size_bytes` | gauge | — | Size of the currently active target. |
-| `updater_target_in_memory` | gauge | — | 0/1: whether the target fits under `target_max_memory_mb`. |
+| `updater_target_cache_bytes` | gauge | — | Bytes of uncompressed delta-target binaries held in RAM, across all artifacts. |
+| `updater_target_cache_entries` | gauge | — | How many targets are resident. |
+| `updater_artifacts` | gauge | — | Registered publication tracks. |
+| `updater_artifact_target_size_bytes` | gauge | `artifact` | Uncompressed size of each track's current target. Cardinality is bounded by the number of artifacts, not by traffic. |
+| `updater_retention_sweeps_total` | counter | `result` | `ok`/`error` per sweep. |
+| `updater_retention_deleted_files_total` | counter | `kind` | `delta`/`full`/`binary`. |
+| `updater_retention_reclaimed_bytes_total` | counter | — | Disk reclaimed by the sweeper. |
 | `updater_admin_requests_total` | counter | `endpoint`, `code` | `code` collapses to `2xx`/`3xx`/`4xx`/`5xx` plus explicit `Unauthorized`/`Forbidden`/`Too Many Requests`. |
 | `updater_admin_rate_limited_total` | counter | — | 429s emitted by the admin token-bucket. Non-zero on steady state = someone hammering. |
 | `updater_signature_failures_total` | counter | — | Manifest sign errors. Should stay at 0. |
@@ -768,13 +1018,14 @@ peaks at ~20× the target binary size. For a 20 MiB target at
 ## Memory bounds (server, 24/7 operation)
 
 The update-server is designed for **strictly bounded RAM** regardless of
-the size of its history: 100 binaries or 10 000, the memory footprint is
-governed by three knobs in `configs/server.yaml` and nothing else.
+the size of its history *or the number of artifacts*: 100 binaries or
+10 000, one track or fifty, the memory footprint is governed by three
+knobs in `configs/server.yaml` and nothing else.
 
 ```yaml
 store:
-  target_max_memory_mb: 200   # active target binary: kept in RAM iff it fits
-  hot_delta_cache_mb: 512     # hot LRU of compressed delta bytes
+  target_cache_mb: 200        # delta-target binaries in RAM, ALL artifacts
+  hot_delta_cache_mb: 512     # hot LRU of transfer bytes
   delta_concurrency: 2        # max concurrent bsdiff runs
 
 manifest:
@@ -785,10 +1036,10 @@ manifest:
 
 | Item | Bound | Notes |
 |---|---|---|
-| Active target binary | ≤ `target_max_memory_mb` | Above the cap, re-read from disk per generation. |
+| Delta-target binaries | ≤ `target_cache_mb` | Byte-budget LRU keyed by hash, **shared across all artifacts** — this is what stops N tracks from multiplying resident memory. A target larger than the whole budget is never cached and is re-read from disk per generation. |
 | Source binaries (historical) | **0** | Never held. Read from disk at each bsdiff generation; the kernel page cache handles OS-level LRU. |
-| Hot delta cache | ≤ `hot_delta_cache_mb` | Byte-budget LRU. Values bigger than the whole budget are rejected (never cached). |
-| Signed manifests | ≤ `cache_size` entries × ~500 B | Entry-count LRU. |
+| Hot transfer cache | ≤ `hot_delta_cache_mb` | Byte-budget LRU holding both deltas and whole compressed binaries. Values bigger than the whole budget are rejected (never cached). |
+| Signed manifests | ≤ `cache_size` entries × ~500 B | Entry-count LRU keyed by `(artifact, from, to)`. |
 | Per-generation bsdiff transient | ~20× the larger of (source, target) | Bounded by `delta_concurrency`. |
 
 ### Request path `/delta/{from}/{to}`
@@ -816,7 +1067,7 @@ under coordinated rollouts.
 
 ### Sizing the knobs
 
-- **`target_max_memory_mb`** — set to the biggest target you plan to ship
+- **`target_cache_mb`** — set to the biggest target you plan to ship
   plus some headroom. Past the cap the server still works, but every
   delta generation re-reads the target from disk (I/O cost, not a
   correctness issue).
@@ -1056,12 +1307,13 @@ cmd/
 pkg/                 # exported, importable as a library
   agent/             # device-side orchestrator: Updater, SlotManager, Watchdog,
                      #   ProtocolClient (HTTP+CoAP), Downloader, RestartStrategy
+  server/            # server-side: content-addressed Store, artifact Registry,
+                     #   Manifester, HTTP+CoAP handlers, admin, Retention
   protocol/          # wire types (JSON + CBOR) shared by HTTP and CoAP
   crypto/            # Ed25519 sign/verify + PEM key I/O
   delta/             # bsdiff + zstd patch pipeline
   compression/       # zstd wrappers
-internal/
-  server/            # binary-only: only consumed by cmd/update-server
+  atomicio/          # durable writes: fsync + atomic rename + parent fsync
 integration/         # //go:build integration end-to-end test
 tools/keygen/        # Ed25519 keypair generator CLI
 docs/

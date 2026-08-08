@@ -28,7 +28,7 @@ import (
 
 	"github.com/carlosprados/ota-updater/pkg/agent"
 	"github.com/carlosprados/ota-updater/pkg/protocol"
-	"github.com/carlosprados/ota-updater/internal/server"
+	"github.com/carlosprados/ota-updater/pkg/server"
 )
 
 // recordingRestart captures Restart invocations without actually exec'ing.
@@ -51,12 +51,16 @@ func (r *recordingRestart) Restart(_ context.Context, binary string, argv []stri
 // e2eFixture wires the real update-server with the real edge-agent updater
 // against a single httptest server. The server-side report handler is
 // intercepted to capture UpdateReport payloads for end-of-test assertions.
+// e2eArtifact is the publication track the end-to-end agent follows.
+var e2eArtifact = protocol.ArtifactKey{Name: "edge-agent", OS: "linux", Arch: "amd64"}
+
 type e2eFixture struct {
 	t *testing.T
 
 	// Server-side
 	httpSrv      *httptest.Server
 	store        *server.Store
+	registry     *server.Registry
 	manifester   *server.Manifester
 	reportsLock  atomic.Pointer[[]protocol.UpdateReport]
 	reportCount  atomic.Int32
@@ -114,7 +118,7 @@ func setupE2E(t *testing.T) *e2eFixture {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	store, err := server.Open(context.Background(), server.StoreOptions{
-		BinariesDir: binariesDir, DeltasDir: deltasDir, TargetPath: targetPath,
+		BinariesDir: binariesDir, DeltasDir: deltasDir,
 	}, logger)
 	if err != nil {
 		t.Fatalf("server.Open: %v", err)
@@ -123,14 +127,31 @@ func setupE2E(t *testing.T) *e2eFixture {
 		t.Fatalf("RegisterBinary(old): %v", err)
 	}
 
-	manifester := server.NewManifester(store, priv, server.ManifesterConfig{
-		ChunkSize:     4096,
-		RetryAfter:    1, // keep tests fast: 1s instead of 30s
-		TargetVersion: "v2",
+	// The registry holds "what is current"; publishing from the target file
+	// mirrors how an operator drives a release.
+	var manifester *server.Manifester
+	registry, err := server.NewRegistry(store, server.RegistryOptions{
+		StatePath: filepath.Join(srvDir, "artifacts.json"),
+		OnChange: func(key protocol.ArtifactKey) {
+			if manifester != nil {
+				manifester.InvalidateArtifact(key)
+			}
+		},
 	}, logger)
+	if err != nil {
+		t.Fatalf("server.NewRegistry: %v", err)
+	}
+	manifester = server.NewManifester(store, registry, priv, server.ManifesterConfig{
+		ChunkSize:         4096,
+		RetryAfter:        1, // keep tests fast: 1s instead of 30s
+		AllowFullDownload: true,
+	}, logger)
+	if _, err := registry.PublishFile(e2eArtifact, "v2", targetPath); err != nil {
+		t.Fatalf("registry.PublishFile: %v", err)
+	}
 
 	apiHandler := server.NewHTTPHandler(server.HTTPConfig{
-		Store: store, Manifester: manifester, Logger: logger,
+		Store: store, Registry: registry, Manifester: manifester, Logger: logger,
 	})
 
 	// Middleware: count heartbeats and capture report bodies so the test can
@@ -138,6 +159,7 @@ func setupE2E(t *testing.T) *e2eFixture {
 	f := &e2eFixture{
 		t:          t,
 		store:      store,
+		registry:   registry,
 		manifester: manifester,
 		oldBin:     oldBin,
 		newBin:     newBin,
@@ -235,7 +257,10 @@ func setupE2E(t *testing.T) *e2eFixture {
 	f.restart = &recordingRestart{}
 	f.updater, err = agent.NewUpdater(agent.UpdaterDeps{
 		Config: agent.UpdaterConfig{
-			DeviceID:      "e2e-device",
+			DeviceID: "e2e-device",
+			// Name the track explicitly so the end-to-end path exercises
+			// artifact routing rather than the default-artifact shortcut.
+			Artifact:      e2eArtifact.String(),
 			StateDir:      agentDir,
 			CheckInterval: 50 * time.Millisecond,
 			MaxRetries:    3,
@@ -375,5 +400,146 @@ func TestE2E_FullCycle(t *testing.T) {
 	}
 	if rep.DeviceID != "e2e-device" {
 		t.Fatalf("report.DeviceID = %s", rep.DeviceID)
+	}
+}
+
+// TestE2E_FullDownloadFallback covers the case the delta path structurally
+// cannot serve: a device running a binary the server has never seen. That
+// happens with factory-flashed units, sideloaded builds, and devices whose
+// source binary aged out of retention.
+//
+// Before the fallback existed such a device was told "no update available"
+// on every heartbeat, forever — a silent, permanent strand. Here the server
+// must instead hand back a signed manifest pointing at the whole compressed
+// target, and the agent must reconstruct it byte-for-byte WITHOUT reading
+// its own (unknown, possibly damaged) active slot.
+func TestE2E_FullDownloadFallback(t *testing.T) {
+	f := setupE2E(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Make the agent's current version unknown to the server by deleting the
+	// registered source binary. Everything else stays identical to the happy
+	// path, so any difference in outcome is attributable to this alone.
+	binPath := filepath.Join(f.stateDir, "..", "server", "binaries", f.oldHash+".bin")
+	if err := os.Remove(binPath); err != nil {
+		t.Fatalf("remove source binary to simulate an unknown version: %v", err)
+	}
+
+	f.runUntilSwap(ctx, 15*time.Second)
+
+	// The reconstruction must be exact even though no patch was applied.
+	slotBPath := filepath.Join(f.stateDir, "slots", agent.SlotNameB)
+	got, err := os.ReadFile(slotBPath)
+	if err != nil {
+		t.Fatalf("read slot B: %v", err)
+	}
+	if !bytes.Equal(got, f.newBin) {
+		t.Fatalf("full download produced %d bytes, want the %d-byte target",
+			len(got), len(f.newBin))
+	}
+	_, activeHash, activeName, err := f.slots.ActiveSlot()
+	if err != nil {
+		t.Fatalf("ActiveSlot post-swap: %v", err)
+	}
+	if activeName != agent.SlotNameB || activeHash != f.targetHash {
+		t.Fatalf("post-swap state wrong: slot=%q hash=%s", activeName, activeHash)
+	}
+
+	// No delta should have been produced at any point: the server had
+	// nothing to diff against.
+	if f.store.HasDelta(f.oldHash, f.targetHash) {
+		t.Fatalf("server built a delta from a source it does not have")
+	}
+
+	// And the device completes the cycle normally from here.
+	if err := f.updater.BootPhase(ctx); err != nil {
+		t.Fatalf("BootPhase: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && f.reportCount.Load() == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	reports := f.reports()
+	if len(reports) != 1 || !reports[0].Success {
+		t.Fatalf("expected one successful report, got %+v", reports)
+	}
+	if reports[0].NewHash != f.targetHash {
+		t.Fatalf("report.NewHash = %s, want %s", reports[0].NewHash, f.targetHash)
+	}
+}
+
+// TestE2E_MultiArtifact proves two tracks coexist on one server: each agent
+// heartbeat is routed by its artifact key and gets its own target. This is
+// the N components × M versions × K architectures shape that a single
+// TargetPath could not express.
+func TestE2E_MultiArtifact(t *testing.T) {
+	f := setupE2E(t)
+
+	// A second track, different bytes, different version label.
+	other := protocol.ArtifactKey{Name: "sidecar", OS: "linux", Arch: "arm64"}
+	otherBin := bytes.Repeat([]byte("SIDECAR-"), 512)
+	if _, err := f.registry.PublishBytes(other, "9.9.9", otherBin); err != nil {
+		t.Fatalf("publish sidecar: %v", err)
+	}
+
+	build := func(artifact string) *protocol.ManifestResponse {
+		t.Helper()
+		body, err := json.Marshal(protocol.Heartbeat{
+			DeviceID:    "probe",
+			VersionHash: f.oldHash,
+			Artifact:    artifact,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.Post(f.httpSrv.URL+protocol.PathHeartbeat,
+			"application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("heartbeat for %q: %v", artifact, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("heartbeat for %q: status %d", artifact, resp.StatusCode)
+		}
+		var mr protocol.ManifestResponse
+		if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
+			t.Fatal(err)
+		}
+		return &mr
+	}
+
+	main := build(e2eArtifact.String())
+	side := build(other.String())
+
+	if main.TargetHash == side.TargetHash {
+		t.Fatalf("both artifacts returned the same target %s", main.TargetHash)
+	}
+	if main.TargetHash != f.targetHash {
+		t.Fatalf("main artifact target = %s, want %s", main.TargetHash, f.targetHash)
+	}
+	if side.TargetHash != sha256Hex(otherBin) {
+		t.Fatalf("sidecar target = %s, want %s", side.TargetHash, sha256Hex(otherBin))
+	}
+	if side.TargetVersion != "9.9.9" {
+		t.Fatalf("sidecar version = %q, want 9.9.9", side.TargetVersion)
+	}
+	if main.Artifact != e2eArtifact.String() || side.Artifact != other.String() {
+		t.Fatalf("responses do not echo their artifact: %q / %q", main.Artifact, side.Artifact)
+	}
+
+	// An unregistered artifact is a client mistake, answered 404 rather than
+	// 500, so it never shows up as a server outage on a dashboard.
+	body, _ := json.Marshal(protocol.Heartbeat{
+		DeviceID: "probe", VersionHash: f.oldHash, Artifact: "ghost/linux/arm64",
+	})
+	resp, err := http.Post(f.httpSrv.URL+protocol.PathHeartbeat,
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("heartbeat for unknown artifact: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown artifact status = %d, want 404", resp.StatusCode)
 	}
 }

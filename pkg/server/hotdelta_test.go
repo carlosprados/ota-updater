@@ -3,10 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
-	"io"
-	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -15,9 +12,9 @@ import (
 )
 
 // hotDeltaFixture sets up a Store with a pre-generated delta already on
-// disk and populated in the hot cache, returning the fromHash. Uses tiny
-// binaries so the test is fast.
-func hotDeltaFixture(t *testing.T) (*Store, string) {
+// disk and populated in the hot cache. Uses tiny binaries so the test is
+// fast. Returns the source and target hashes.
+func hotDeltaFixture(t *testing.T) (*Store, string, string) {
 	t.Helper()
 	oldBin := bytes.Repeat([]byte("A"), 8<<10)
 	newBin := make([]byte, len(oldBin))
@@ -30,41 +27,32 @@ func hotDeltaFixture(t *testing.T) (*Store, string) {
 
 // hotDeltaFixtureFrom is the parameterized version used by tests that need
 // control over the binary contents.
-func hotDeltaFixtureFrom(t *testing.T, oldBin, newBin []byte) (*Store, string) {
+func hotDeltaFixtureFrom(t *testing.T, oldBin, newBin []byte) (*Store, string, string) {
 	t.Helper()
-	tmp := t.TempDir()
-	binDir := filepath.Join(tmp, "binaries")
-	deltaDir := filepath.Join(tmp, "deltas")
-	targetPath := filepath.Join(tmp, "target.bin")
-	if err := os.WriteFile(targetPath, newBin, 0o644); err != nil {
-		t.Fatalf("write target: %v", err)
-	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s, err := Open(context.Background(), StoreOptions{
-		BinariesDir: binDir, DeltasDir: deltaDir, TargetPath: targetPath,
-	}, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := newTestStore(t)
 	oldHash, err := s.RegisterBinary(oldBin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Pre-generate the delta so it exists on disk AND in hot cache.
-	if _, err := s.EnsureDelta(context.Background(), oldHash); err != nil {
+	targetHash, err := s.RegisterBinary(newBin)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return s, oldHash
+	// Pre-generate the delta so it exists on disk AND in hot cache.
+	if _, err := s.EnsureDelta(context.Background(), oldHash, targetHash); err != nil {
+		t.Fatal(err)
+	}
+	return s, oldHash, targetHash
 }
 
 func TestStore_GetDeltaBytes_HotHit(t *testing.T) {
-	s, oldHash := hotDeltaFixture(t)
+	s, oldHash, targetHash := hotDeltaFixture(t)
 	// Ensure the cache was populated by generateAndCache.
-	if s.hotDeltas.Len() == 0 {
+	if s.hotCache.Len() == 0 {
 		t.Fatalf("generateAndCache should have populated the hot cache")
 	}
 
-	data, found, err := s.GetDeltaBytes(context.Background(), oldHash)
+	data, found, err := s.GetDeltaBytes(context.Background(), oldHash, targetHash)
 	if err != nil || !found || len(data) == 0 {
 		t.Fatalf("GetDeltaBytes: err=%v found=%v len=%d", err, found, len(data))
 	}
@@ -75,26 +63,26 @@ func TestStore_GetDeltaBytes_HotHit(t *testing.T) {
 }
 
 func TestStore_GetDeltaBytes_DiskHitPopulatesHot(t *testing.T) {
-	s, oldHash := hotDeltaFixture(t)
+	s, oldHash, targetHash := hotDeltaFixture(t)
 
 	// Evict everything from hot so the next call must read from disk.
-	s.hotDeltas.Clear()
-	if s.hotDeltas.Len() != 0 {
+	s.hotCache.Clear()
+	if s.hotCache.Len() != 0 {
 		t.Fatalf("hot cache not cleared")
 	}
 
-	_, found, err := s.GetDeltaBytes(context.Background(), oldHash)
+	_, found, err := s.GetDeltaBytes(context.Background(), oldHash, targetHash)
 	if err != nil || !found {
 		t.Fatalf("GetDeltaBytes after clear: err=%v found=%v", err, found)
 	}
 	// The disk-hit path must populate the hot cache.
-	if s.hotDeltas.Len() == 0 {
+	if s.hotCache.Len() == 0 {
 		t.Fatalf("disk hit should have populated the hot cache")
 	}
 }
 
 func TestStore_GetDeltaBytes_DiskMissDispatchesAndReturnsFalse(t *testing.T) {
-	s, _ := hotDeltaFixture(t)
+	s, _, targetHash := hotDeltaFixture(t)
 	// Register a different source binary but never generate the delta.
 	newSource := bytes.Repeat([]byte("Z"), 8<<10)
 	otherHash, err := s.RegisterBinary(newSource)
@@ -102,7 +90,7 @@ func TestStore_GetDeltaBytes_DiskMissDispatchesAndReturnsFalse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, found, err := s.GetDeltaBytes(context.Background(), otherHash)
+	_, found, err := s.GetDeltaBytes(context.Background(), otherHash, targetHash)
 	if err != nil {
 		t.Fatalf("GetDeltaBytes: %v", err)
 	}
@@ -113,11 +101,11 @@ func TestStore_GetDeltaBytes_DiskMissDispatchesAndReturnsFalse(t *testing.T) {
 	// generateAndCache uses singleflight + deltaSlots, so polling briefly
 	// is enough on CI hardware.
 	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && !s.HasDelta(otherHash) {
+	for time.Now().Before(deadline) && !s.HasDelta(otherHash, targetHash) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	// Now the second call should hit (either hot or disk).
-	_, found, err = s.GetDeltaBytes(context.Background(), otherHash)
+	_, found, err = s.GetDeltaBytes(context.Background(), otherHash, targetHash)
 	if err != nil {
 		t.Fatalf("GetDeltaBytes retry: %v", err)
 	}
@@ -131,8 +119,8 @@ func TestStore_GetDeltaBytes_DiskMissDispatchesAndReturnsFalse(t *testing.T) {
 // ONE os.ReadFile. This proves the singleflight protection against
 // campaign-style bursts.
 func TestStore_GetDeltaBytes_ConcurrentReadersCollapse(t *testing.T) {
-	s, oldHash := hotDeltaFixture(t)
-	s.hotDeltas.Clear()
+	s, oldHash, targetHash := hotDeltaFixture(t)
+	s.hotCache.Clear()
 
 	// Count disk reads by intercepting through an indirect mechanism: we
 	// measure via the singleflight behavior indirectly — we wrap the readGroup
@@ -148,7 +136,7 @@ func TestStore_GetDeltaBytes_ConcurrentReadersCollapse(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			data, found, err := s.GetDeltaBytes(context.Background(), oldHash)
+			data, found, err := s.GetDeltaBytes(context.Background(), oldHash, targetHash)
 			if err != nil || !found {
 				t.Errorf("worker %d: err=%v found=%v", idx, err, found)
 				return
@@ -159,7 +147,7 @@ func TestStore_GetDeltaBytes_ConcurrentReadersCollapse(t *testing.T) {
 	wg.Wait()
 
 	// Hot cache must hold exactly one entry (the shared delta).
-	if got := s.hotDeltas.Len(); got != 1 {
+	if got := s.hotCache.Len(); got != 1 {
 		t.Fatalf("hot cache Len = %d, want 1 (singleflight should collapse)", got)
 	}
 	// Every goroutine should have received a byte slice; non-nil checks only
@@ -176,75 +164,39 @@ func TestStore_GetDeltaBytes_ConcurrentReadersCollapse(t *testing.T) {
 	}
 }
 
-func TestStore_TargetOverCap_NotKeptInRAM(t *testing.T) {
-	tmp := t.TempDir()
-	binDir := filepath.Join(tmp, "binaries")
-	deltaDir := filepath.Join(tmp, "deltas")
-	// 2 MiB binary under a 1 MiB cap.
-	targetBin := bytes.Repeat([]byte("T"), 2<<20)
-	targetPath := filepath.Join(tmp, "target.bin")
-	if err := os.WriteFile(targetPath, targetBin, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s, err := Open(context.Background(), StoreOptions{
-		BinariesDir:          binDir,
-		DeltasDir:            deltaDir,
-		TargetPath:           targetPath,
-		TargetMaxMemoryBytes: 1 << 20, // 1 MiB cap
-	}, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.TargetBinary() != nil {
-		t.Fatalf("target above cap should not be kept in RAM; got %d bytes", len(s.TargetBinary()))
-	}
-	// But the hash and disk persistence must still be intact.
-	if s.TargetHash() == "" {
-		t.Fatalf("target hash must still be computed")
-	}
-	if !fileExists(filepath.Join(binDir, s.TargetHash()+".bin")) {
-		t.Fatalf("target must still be persisted to binariesDir")
-	}
-}
-
-func TestStore_TargetOverCap_GenerationReadsFromDisk(t *testing.T) {
-	tmp := t.TempDir()
-	binDir := filepath.Join(tmp, "binaries")
-	deltaDir := filepath.Join(tmp, "deltas")
+// The target cache is a byte-budget LRU shared by every artifact, replacing
+// the old single "is the target in RAM" flag. Two properties matter: an
+// oversized target must not be cached (and generation must still work by
+// reading it from disk), and a target that fits must be reused.
+func TestStore_TargetCache_OversizedTargetNotCached(t *testing.T) {
 	oldBin := bytes.Repeat([]byte("A"), 1<<20)
 	newBin := make([]byte, len(oldBin))
 	copy(newBin, oldBin)
 	for i := 0; i < len(newBin); i += 200 {
 		newBin[i] ^= 0x5A
 	}
-	targetPath := filepath.Join(tmp, "target.bin")
-	if err := os.WriteFile(targetPath, newBin, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s, err := Open(context.Background(), StoreOptions{
-		BinariesDir:          binDir,
-		DeltasDir:            deltaDir,
-		TargetPath:           targetPath,
-		TargetMaxMemoryBytes: 1 << 10, // way below actual size → not cached
-	}, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.TargetBinary() != nil {
-		t.Fatalf("target should NOT be in RAM with tiny cap")
-	}
+	s := newTestStore(t, func(o *StoreOptions) {
+		o.TargetCacheBytes = 1 << 10 // way below the 1 MiB target
+	})
 	oldHash, err := s.RegisterBinary(oldBin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// generateAndCache must read target from disk now; verify it produces a
-	// delta that reconstructs newBin correctly.
-	path, err := s.EnsureDelta(context.Background(), oldHash)
+	targetHash, err := s.RegisterBinary(newBin)
 	if err != nil {
-		t.Fatalf("EnsureDelta (off-heap target): %v", err)
+		t.Fatal(err)
 	}
+
+	path, err := s.EnsureDelta(context.Background(), oldHash, targetHash)
+	if err != nil {
+		t.Fatalf("EnsureDelta with off-heap target: %v", err)
+	}
+	if got := s.targetCache.Len(); got != 0 {
+		t.Fatalf("target cache holds %d entries; an oversized target must be rejected", got)
+	}
+
+	// The delta must still be correct — reading the target from disk is a
+	// performance choice, never a correctness one.
 	compressed, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -254,34 +206,60 @@ func TestStore_TargetOverCap_GenerationReadsFromDisk(t *testing.T) {
 		t.Fatalf("delta.Apply: %v", err)
 	}
 	if !bytes.Equal(reconstructed, newBin) {
-		t.Fatalf("reconstructed binary differs from newBin")
+		t.Fatalf("reconstructed binary differs from target")
+	}
+}
+
+func TestStore_TargetCache_ReusedAcrossGenerations(t *testing.T) {
+	s := newTestStore(t) // default budget, plenty for these sizes
+	targetBin := bytes.Repeat([]byte("T"), 16<<10)
+	targetHash, err := s.RegisterBinary(targetBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two distinct sources diffed against the same target.
+	for i, filler := range []byte{'A', 'B'} {
+		src := bytes.Repeat([]byte{filler}, 16<<10)
+		srcHash, err := s.RegisterBinary(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.EnsureDelta(context.Background(), srcHash, targetHash); err != nil {
+			t.Fatalf("EnsureDelta #%d: %v", i, err)
+		}
+	}
+	if got := s.targetCache.Len(); got != 1 {
+		t.Fatalf("target cache Len = %d, want 1 (one target, two generations)", got)
+	}
+	if cached, ok := s.targetCache.Get(targetHash); !ok || !bytes.Equal(cached, targetBin) {
+		t.Fatalf("target cache does not hold the target bytes")
 	}
 }
 
 func TestStore_BinaryCacheRemoved(t *testing.T) {
 	// This test pins the invariant: source binaries MUST NOT be cached in
-	// process RAM. loadBinary always reads from disk. If somebody adds a
+	// process RAM. LoadBinary always reads from disk. If somebody adds a
 	// cache later, we want this test to fail and force a redesign — the
 	// invariant is load-bearing for 24/7 memory bounds.
-	s, oldHash := hotDeltaFixture(t)
+	s, oldHash, _ := hotDeltaFixture(t)
 
-	// Read the binary through loadBinary multiple times. If there were a
+	// Read the binary through LoadBinary multiple times. If there were a
 	// cache, subsequent reads would hit it; with no cache, each call does a
 	// fresh os.ReadFile. We verify correctness (bytes match) and that the
 	// Store struct has no field that could grow in response to the calls.
 	for i := 0; i < 3; i++ {
-		data, err := s.loadBinary(oldHash)
+		data, err := s.LoadBinary(oldHash)
 		if err != nil {
-			t.Fatalf("loadBinary #%d: %v", i, err)
+			t.Fatalf("LoadBinary #%d: %v", i, err)
 		}
 		if len(data) == 0 {
-			t.Fatalf("loadBinary returned empty data")
+			t.Fatalf("LoadBinary returned empty data")
 		}
 	}
-	// The hot cache holds deltas, NOT binaries. Asserting its Len didn't
-	// drift past what generateAndCache put there (1) is a proxy for
-	// "loadBinary didn't secretly cache source binaries into any in-RAM map".
-	if got := s.hotDeltas.Len(); got > 1 {
+	// The hot cache holds transfer artifacts, NOT source binaries. Asserting
+	// its Len didn't drift past what the generation put there (1) is a proxy
+	// for "LoadBinary didn't secretly cache binaries into an in-RAM map".
+	if got := s.hotCache.Len(); got > 1 {
 		t.Fatalf("hot cache grew to %d entries after loadBinary calls; source binaries must not be cached", got)
 	}
 }

@@ -22,7 +22,8 @@ import (
 	"github.com/plgd-dev/go-coap/v3/udp"
 
 	"github.com/carlosprados/ota-updater/pkg/crypto"
-	"github.com/carlosprados/ota-updater/internal/server"
+	"github.com/carlosprados/ota-updater/pkg/protocol"
+	"github.com/carlosprados/ota-updater/pkg/server"
 )
 
 func main() {
@@ -59,57 +60,110 @@ func run(cfgPath string) error {
 	metrics := server.NewMetrics()
 
 	store, err := server.Open(ctx, server.StoreOptions{
-		BinariesDir:          cfg.Store.BinariesDir,
-		DeltasDir:            cfg.Store.DeltasDir,
-		TargetPath:           cfg.Target.Binary,
-		TargetMaxMemoryBytes: int64(cfg.Store.TargetMaxMemoryMB) << 20,
-		HotDeltaCacheBytes:   int64(cfg.Store.HotDeltaCacheMB) << 20,
-		DeltaConcurrency:     cfg.Store.DeltaConcurrency,
-		DiskSpaceMinFreePct:  cfg.Store.DiskSpaceMinFreePct,
-		DiskSpaceMinFreeMB:   cfg.Store.DiskSpaceMinFreeMB,
-		Metrics:              metrics,
+		BinariesDir:         cfg.Store.BinariesDir,
+		DeltasDir:           cfg.Store.DeltasDir,
+		TargetCacheBytes:    int64(cfg.Store.TargetCacheMB) << 20,
+		HotDeltaCacheBytes:  int64(cfg.Store.HotDeltaCacheMB) << 20,
+		DeltaConcurrency:    cfg.Store.DeltaConcurrency,
+		DiskSpaceMinFreePct: cfg.Store.DiskSpaceMinFreePct,
+		DiskSpaceMinFreeMB:  cfg.Store.DiskSpaceMinFreeMB,
+		Metrics:             metrics,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
 
-	manifester := server.NewManifester(store, priv, server.ManifesterConfig{
-		ChunkSize:     cfg.Manifest.ChunkSize,
-		RetryAfter:    cfg.Manifest.RetryAfter,
-		TargetVersion: cfg.Target.Version,
-		CacheSize:     cfg.Manifest.CacheSize,
-		Metrics:       metrics,
+	// The registry needs to notify the manifester, and the manifester needs
+	// to query the registry. The cycle is broken by capturing the manifester
+	// by reference: OnChange only ever fires from Publish, which happens
+	// after both are constructed.
+	var manifester *server.Manifester
+	registry, err := server.NewRegistry(store, server.RegistryOptions{
+		StatePath:       cfg.Store.StateFile,
+		HistoryDepth:    cfg.Retention.HistoryDepth,
+		DefaultArtifact: cfg.DefaultArtifact,
+		Metrics:         metrics,
+		OnChange: func(key protocol.ArtifactKey) {
+			if manifester != nil {
+				manifester.InvalidateArtifact(key)
+			}
+		},
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("open registry: %w", err)
+	}
+
+	manifester = server.NewManifester(store, registry, priv, server.ManifesterConfig{
+		ChunkSize:         cfg.Manifest.ChunkSize,
+		RetryAfter:        cfg.Manifest.RetryAfter,
+		CacheSize:         cfg.Manifest.CacheSize,
+		AllowFullDownload: cfg.AllowFullDownload(),
+		Metrics:           metrics,
 	}, logger)
 
-	// fsnotify-based auto-reload of the target binary. Tracked so the main
-	// shutdown sequence can wait for it.
-	watcher := server.NewWatcher(cfg.Target.Binary, server.DefaultWatcherDebounce, func() {
-		reloadCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := store.Reload(reloadCtx); err != nil {
-			logger.Error("auto-reload failed", "op", "watcher_reload", "err", err)
-			return
-		}
-		manifester.Invalidate()
-		logger.Info("auto-reload applied",
-			"op", "watcher_reload", "target_hash", store.TargetHash(),
-		)
-	}, logger)
+	// Config is authoritative for the artifacts it declares: re-publish them
+	// on every boot so an operator edit always wins over persisted state.
+	if err := registry.ReconcileConfig(ctx, cfg.Artifacts); err != nil {
+		return fmt.Errorf("reconcile artifacts: %w", err)
+	}
+
 	var goroutines sync.WaitGroup
-	goroutines.Add(1)
-	go func() {
-		defer goroutines.Done()
-		if err := watcher.Run(ctx); err != nil {
-			logger.Error("watcher exited", "op", "watcher", "err", err)
-		}
-	}()
+
+	// One fsnotify watcher per file-backed artifact. Tracked so the main
+	// shutdown sequence can wait for them.
+	for key, path := range registry.WatchedSources() {
+		key, path := key, path
+		watcher := server.NewWatcher(path, server.DefaultWatcherDebounce, func() {
+			if _, err := registry.Republish(key); err != nil {
+				logger.Error("auto-reload failed",
+					"op", "watcher_reload", "artifact", key.String(), "err", err)
+				return
+			}
+			logger.Info("auto-reload applied",
+				"op", "watcher_reload", "artifact", key.String())
+		}, logger)
+		goroutines.Add(1)
+		go func() {
+			defer goroutines.Done()
+			if err := watcher.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("watcher exited",
+					"op", "watcher", "artifact", key.String(), "err", err)
+			}
+		}()
+	}
+
+	// Retention sweeper. Off unless explicitly enabled — reclaiming disk by
+	// deleting an operator's binaries is not a sensible default.
+	var retention *server.Retention
+	if cfg.Retention.Enabled {
+		retention = server.NewRetention(store, registry, server.RetentionOptions{
+			Interval:              cfg.Retention.Interval,
+			DeltaMaxAge:           cfg.Retention.DeltaMaxAge,
+			DeltasMaxTotalBytes:   int64(cfg.Retention.DeltasMaxTotalMB) << 20,
+			CollectOrphanBinaries: cfg.Retention.CollectOrphanBinaries,
+			OrphanBinaryMinAge:    cfg.Retention.OrphanBinaryMinAge,
+			Metrics:               metrics,
+		}, logger)
+		goroutines.Add(1)
+		go func() {
+			defer goroutines.Done()
+			if err := retention.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("retention exited", "op", "retention", "err", err)
+			}
+		}()
+	} else {
+		logger.Info("retention sweeper disabled; store grows without bound",
+			"op", "startup", "hint", "set retention.enabled to reclaim disk")
+	}
 
 	// HTTP: main API + admin under the same listener.
 	rootMux := http.NewServeMux()
 	server.RegisterAdminHandlers(rootMux, server.AdminDeps{
 		Token:           cfg.Admin.Token,
 		Store:           store,
+		Registry:        registry,
 		Manifester:      manifester,
+		Retention:       retention,
 		Logging:         logging,
 		Logger:          logger,
 		Metrics:         metrics,
@@ -117,7 +171,8 @@ func run(cfgPath string) error {
 		RateLimitBurst:  cfg.Admin.RateLimitBurst,
 	})
 	apiHandler := server.NewHTTPHandler(server.HTTPConfig{
-		Store: store, Manifester: manifester, Logger: logger, Metrics: metrics,
+		Store: store, Registry: registry, Manifester: manifester,
+		Logger: logger, Metrics: metrics,
 	})
 	// Catch-all: anything not matched by /admin/* goes through the API mux
 	// (which has its own method+path patterns and panic recovery).
@@ -143,7 +198,8 @@ func run(cfgPath string) error {
 
 	// CoAP server on UDP.
 	coapRouter, err := server.NewCoAPRouter(server.CoAPConfig{
-		Store: store, Manifester: manifester, Logger: logger, Metrics: metrics,
+		Store: store, Registry: registry, Manifester: manifester,
+		Logger: logger, Metrics: metrics,
 	})
 	if err != nil {
 		return fmt.Errorf("coap router: %w", err)
