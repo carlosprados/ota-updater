@@ -191,14 +191,14 @@ func TestCoAP_Delta_404_TriggersAsync(t *testing.T) {
 }
 
 func TestCoAP_Report(t *testing.T) {
-	addr, _, done := coapFixture(t, false)
+	addr, f, done := coapFixture(t, false)
 	defer done()
 
 	co := coapDial(t, addr)
 	defer co.Close()
 
 	body, _ := cbor.Marshal(protocol.UpdateReport{
-		DeviceID: "dev-1", PreviousHash: "p", NewHash: "n", Success: true,
+		DeviceID: "dev-1", PreviousHash: f.OldHash, NewHash: f.TargetHash, Success: true,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

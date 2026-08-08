@@ -173,14 +173,14 @@ func TestHTTPClient_BaseURL_TrimsTrailingSlash(t *testing.T) {
 }
 
 func TestCoAPClient_Names(t *testing.T) {
-	c := NewCoAPClient("coap://server")
+	c := NewCoAPClient("coap://server", CoAPOptions{})
 	if c.Name() != "coap" {
 		t.Fatalf("Name = %q", c.Name())
 	}
 }
 
 func TestCoAPClient_DeltaURL(t *testing.T) {
-	c := NewCoAPClient("coap://server:5683")
+	c := NewCoAPClient("coap://server:5683", CoAPOptions{})
 	cases := map[string]string{
 		"/delta/a/b":           "coap://server:5683/delta/a/b",
 		"delta/a/b":            "coap://server:5683/delta/a/b",
@@ -195,7 +195,7 @@ func TestCoAPClient_DeltaURL(t *testing.T) {
 }
 
 func TestCoAPClient_RejectsNonCoAPBaseURL(t *testing.T) {
-	c := NewCoAPClient("http://server")
+	c := NewCoAPClient("http://server", CoAPOptions{})
 	_, err := c.Heartbeat(context.Background(), &protocol.Heartbeat{DeviceID: "x"})
 	if err == nil {
 		t.Fatalf("non-coap base URL should error")
@@ -206,7 +206,7 @@ func TestCoAPClient_RejectsNonCoAPBaseURL(t *testing.T) {
 }
 
 func TestCoAPClient_Heartbeat_NilRequest(t *testing.T) {
-	c := NewCoAPClient("coap://x")
+	c := NewCoAPClient("coap://x", CoAPOptions{})
 	if _, err := c.Heartbeat(context.Background(), nil); err == nil {
 		t.Fatalf("nil heartbeat should error")
 	}
@@ -263,7 +263,7 @@ func TestCoAPClient_Report_RoundTrip(t *testing.T) {
 	)
 	defer cleanup()
 
-	c := NewCoAPClient("coap://" + addr)
+	c := NewCoAPClient("coap://"+addr, CoAPOptions{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -301,7 +301,7 @@ func TestCoAPClient_Heartbeat_RoundTrip(t *testing.T) {
 	)
 	defer cleanup()
 
-	c := NewCoAPClient("coap://" + addr)
+	c := NewCoAPClient("coap://"+addr, CoAPOptions{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -315,14 +315,14 @@ func TestCoAPClient_Heartbeat_RoundTrip(t *testing.T) {
 }
 
 func TestCoAPClient_Report_NilRequest(t *testing.T) {
-	c := NewCoAPClient("coap://x")
+	c := NewCoAPClient("coap://x", CoAPOptions{})
 	if err := c.Report(context.Background(), nil); err == nil {
 		t.Fatalf("nil report should error")
 	}
 }
 
 func TestCoAPClient_Report_RejectsNonCoAPBaseURL(t *testing.T) {
-	c := NewCoAPClient("http://x")
+	c := NewCoAPClient("http://x", CoAPOptions{})
 	err := c.Report(context.Background(), &protocol.UpdateReport{DeviceID: "x"})
 	if err == nil {
 		t.Fatalf("non-coap base URL should error")
@@ -346,7 +346,7 @@ func TestMismatchedPairError_Message(t *testing.T) {
 func TestCoAPClient_Heartbeat_DialFailure(t *testing.T) {
 	// Use a TEST-NET-1 address (RFC 5737, unroutable on the public internet)
 	// + a timeout context to surface a clean dial/post error.
-	c := NewCoAPClient("coap://192.0.2.1:5683")
+	c := NewCoAPClient("coap://192.0.2.1:5683", CoAPOptions{})
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	_, err := c.Heartbeat(ctx, &protocol.Heartbeat{DeviceID: "x"})

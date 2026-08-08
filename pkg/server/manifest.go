@@ -132,6 +132,9 @@ func cacheKey(artifact, from, to string) string {
 //   - source unknown to the server   → signed manifest, BinaryEndpoint set
 //     (full download), or UpdateAvailable=false if full download is disabled
 func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protocol.ManifestResponse, error) {
+	if err := hb.Validate(); err != nil {
+		return nil, err
+	}
 	art, err := m.registry.Resolve(hb.Artifact)
 	if err != nil {
 		return nil, fmt.Errorf("resolve artifact %q: %w", hb.Artifact, err)
@@ -146,8 +149,21 @@ func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protoc
 		return &protocol.ManifestResponse{UpdateAvailable: false, Artifact: artifactKey}, nil
 	}
 
-	key := cacheKey(artifactKey, hb.VersionHash, targetHash)
-	if cached, ok := m.cache.Get(key); ok {
+	// Whether we can diff decides both the transfer mode AND the cache key,
+	// so it is resolved before the cache lookup.
+	known := protocol.IsValidHash(hb.VersionHash) && m.store.HasBinary(hb.VersionHash)
+
+	// Unknown sources all receive the SAME response: the full-download
+	// manifest depends only on the target, never on what the device claims to
+	// be running. Collapsing them onto one cache key (artifact, "", target)
+	// means a peer spraying novel version hashes can no longer choose cache
+	// keys, so it cannot evict legitimate entries from the bounded LRU or
+	// force re-signing for real devices.
+	sourceKey := ""
+	if known {
+		sourceKey = hb.VersionHash
+	}
+	if cached, ok := m.cache.Get(cacheKey(artifactKey, sourceKey, targetHash)); ok {
 		return cached, nil
 	}
 
@@ -155,7 +171,16 @@ func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protoc
 	// device is running. A device that was flashed at the factory, sideloaded,
 	// or whose source binary aged out of retention has no diffable ancestor
 	// here — that is the case the full download exists for.
-	if m.store.HasBinary(hb.VersionHash) {
+	//
+	// VersionHash arrives from an unauthenticated peer and is used to build
+	// filesystem paths (`<hash>.bin`, `<from>_<to>.delta.zst`), so it is
+	// gated here rather than trusted. A value that is not a SHA-256 digest
+	// cannot name a binary this server holds, so it is treated as an unknown
+	// version and falls through to the full download. It is deliberately NOT
+	// a hard rejection: a device whose stored version state is corrupt is
+	// exactly the device that most needs an update, and 400-ing it would
+	// strand it — the failure mode the full-download path exists to remove.
+	if known {
 		resp, err := m.buildDelta(ctx, hb, art)
 		if err != nil {
 			return nil, err
@@ -230,7 +255,8 @@ func (m *Manifester) buildFull(ctx context.Context, hb *protocol.Heartbeat, art 
 	if err != nil {
 		return nil, err
 	}
-	m.memoize(art, hb.VersionHash, resp)
+	// Empty source key: see the "unknown sources" note in Build.
+	m.memoize(art, "", resp)
 	m.logger.Info("manifest built and cached",
 		"op", "manifest", "mode", "full",
 		"device_id", hb.DeviceID, "artifact", art.Key.String(),

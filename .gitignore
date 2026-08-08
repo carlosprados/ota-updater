@@ -13,3 +13,6 @@
 /site/public/
 /site/resources/
 /site/.hugo_build.lock
+
+# Review handoffs stay local: they describe findings before the fix ships.
+/HANDOFF-*.md

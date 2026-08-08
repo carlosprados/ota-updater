@@ -4,8 +4,24 @@ name: Publish docs
 # whenever a version tag is pushed, so what is published always corresponds to
 # a real release rather than to whatever happened to be on main.
 #
-# workflow_dispatch is kept for two cases: re-deploying after a Pages settings
-# change, and publishing a docs-only fix without minting a new version tag.
+# IMPORTANT — what workflow_dispatch can and cannot do.
+#
+# GitHub Pages keys a deployment by commit: actions/deploy-pages sends
+# GITHUB_SHA as pages_build_version, and a second deployment of a commit it
+# has already published is discarded SILENTLY, with a green check. Overriding
+# GITHUB_SHA in a step's env: does not help either — the runner re-applies the
+# default GITHUB_* variables afterwards.
+#
+# So dispatching this workflow only actually publishes when it runs against a
+# commit Pages has not served yet:
+#
+#   - docs-only fix on a new commit  -> works
+#   - re-run to pick up a Pages settings change on the same commit -> NO-OP
+#   - re-stamp a different `release` label on an already-deployed commit -> NO-OP
+#
+# The tag trigger is unaffected: a tag build is normally the first deployment
+# of that commit. If you need a label change to take effect, it has to ride on
+# a new commit.
 on:
   push:
     tags:
@@ -13,7 +29,10 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: 'Release label to stamp on the site (defaults to the latest tag)'
+        description: >-
+          Release label to stamp on the site (defaults to the latest tag).
+          Only takes effect on a commit Pages has not deployed before - see
+          the note at the top of this file.
         required: false
         type: string
 
