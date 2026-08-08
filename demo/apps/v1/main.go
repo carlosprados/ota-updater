@@ -133,7 +133,7 @@ func buildUpdater(cfg *agent.Config, logger *slog.Logger) *agent.Updater {
 	}
 	httpClient := &http.Client{
 		Transport: &http.Transport{
-			DialContext: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 			MaxIdleConns:        2,
 			IdleConnTimeout:     60 * time.Second,
 			TLSHandshakeTimeout: 15 * time.Second,

@@ -1,0 +1,226 @@
+---
+title: "Agent"
+weight: 40
+description: "A/B slots, the watchdog, rollback, and embedding the agent as a library."
+---
+
+# Edge agent
+
+## A/B slots
+
+The device keeps two slot files and a symlink. Updates are written to the
+**inactive** slot; the symlink swap is the only atomic moment.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+
+    state "slot A active" as A
+    state "slot B active" as B
+    state "staging in B" as SB
+    state "staging in A" as SA
+
+    A --> SB: write reconstructed<br/>binary to B
+    SB --> B: .pending_update written,<br/>symlink swapped, exec
+    B --> SA: next update
+    SA --> A: swap back
+
+    B --> A: rollback<br/><i>health check failed</i>
+    A --> B: rollback
+
+    note right of SB
+        The active slot is never
+        touched while staging.
+        A crash here loses nothing.
+    end note
+```
+
+The ordering is chosen so that **every** crash point is recoverable:
+
+| Crash between… | Next boot sees | Action |
+|---|---|---|
+| staging and `.pending_update` | no marker | nothing happened; retry next cycle |
+| `.pending_update` and symlink swap | marker, but `active_hash ≠ pending.new_hash` | clear the marker, no rollback |
+| symlink swap and exec | marker matching active hash | run the watchdog window normally |
+
+## Boot phase and watchdog
+
+After the swap, the freshly-exec'd binary has to prove it works.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Boot: process starts
+
+    Boot --> Normal: no .pending_update
+    Boot --> CheckCount: .pending_update present
+
+    CheckCount --> BadVersion: boot count > 2<br/><i>same version_hash</i>
+    CheckCount --> Mismatch: active_hash ≠ pending.new_hash
+    CheckCount --> Window: counts ok
+
+    Mismatch --> Normal: clear marker,<br/>no rollback
+
+    Window --> Healthy: heartbeat OK<br/><i>within watchdog_timeout</i>
+    Window --> Retry: heartbeat failed
+    Retry --> Window: attempts < 3
+    Retry --> Unhealthy: attempts exhausted
+
+    Healthy --> Confirm
+    Confirm --> Normal: clear marker,<br/>reset boot count,<br/>report success=true
+
+    Unhealthy --> Rollback
+    BadVersion --> Rollback: mark version bad<br/><i>permanently</i>
+
+    Rollback --> Normal: swap back,<br/>report success=false,<br/>exec previous binary
+
+    Normal --> [*]: enter update loop
+```
+
+Two numbers, both deliberate:
+
+- **Three heartbeat attempts** inside `watchdog_timeout`, not one. A single
+  failed heartbeat on NB-IoT means almost nothing — transient loss is the
+  normal condition of the link, and rolling back on it would produce far more
+  spurious rollbacks than genuine ones.
+- **Boot count > 2** marks a version bad *permanently*. A binary that starts,
+  crashes, and starts again twice is not going to succeed on the third try;
+  continuing would be a boot loop rather than a recovery.
+
+The health check is a pluggable `HealthChecker` interface. The default is
+"a heartbeat to the server succeeded", which is a reasonable proxy for "the
+network stack and the process both work" — but an embedder that knows what
+*its* application healthy means should replace it.
+
+## The update loop
+
+```mermaid
+flowchart TD
+    START["RunOnce"] --> CD{"restart cooldown<br/>active?"}
+    CD -->|yes, no manual trigger| SKIP["skip cycle"]
+    CD -->|no| HB["heartbeat"]
+
+    HB --> AVAIL{"UpdateAvailable?"}
+    AVAIL -->|no| DONE["done"]
+    AVAIL -->|"RetryAfter > 0"| DONE
+
+    AVAIL -->|yes| GATE{"policy gate<br/><i>auto_update + max_bump</i>"}
+    GATE -->|blocked| LOG["log availability,<br/>do not apply"]
+    GATE -->|"allowed, or<br/>manual override"| VERIFY["verify signature"]
+
+    VERIFY -->|invalid| ABORT["abort"]
+    VERIFY -->|valid| DL["download<br/><i>resumable, backoff+jitter</i>"]
+
+    DL --> RECON["reconstruct<br/><i>bspatch or decompress</i>"]
+    RECON -->|hash mismatch| ABORT
+    RECON --> STAGE["write inactive slot"]
+    STAGE --> MARK["write .pending_update"]
+    MARK --> SWAP["atomic symlink swap"]
+    SWAP --> EXEC["syscall.Exec"]
+
+    classDef bad fill:#fce8e6,stroke:#d93025
+    classDef ok fill:#e6f4ea,stroke:#34a853
+    class ABORT,SKIP bad
+    class EXEC ok
+```
+
+### Jitter
+
+`check_interval` is spread by ±`jitter` (default ±30%) on every cycle. A fleet
+flashed and deployed on the same day would otherwise heartbeat in lock-step
+forever, turning an hourly cadence into an hourly thundering herd against the
+server.
+
+### Update policy
+
+The agent compares its own baked-in version (injected via
+`-ldflags "-X main.version=..."`) against `TargetVersion`:
+
+```yaml
+update:
+  auto_update: true              # master switch
+  max_bump: major                # none | patch | minor | major
+  unknown_version_policy: deny   # deny | allow, for non-semver labels
+```
+
+Two equivalent one-shot manual overrides bypass the gate for exactly one
+cycle — a sidecar file for operators and a method for embedders:
+
+```sh
+touch /opt/agent/slots/.update_now
+```
+
+```go
+updater.TriggerUpdate()
+```
+
+## Self-restart
+
+The default `RestartStrategy` is `syscall.Exec`, which **replaces the process
+image in place**. That preserves the PID, cgroup, environment and file
+descriptors, which in turn makes it transparent to service managers:
+
+- **systemd** — works with any `Type=`, including `notify` (re-send
+  `sd_notify(READY=1)` after exec). Point `ExecStart=` at the *symlink*, not a
+  slot file, so it stays stable across swaps.
+- **Docker** — PID 1 does not change, so the container is not restarted. The
+  A/B slots must live on a **persistent volume**, or an update evaporates on
+  the next container recreate.
+
+`ExitRestart` is shipped as an alternative for environments that would rather
+have the supervisor relaunch the process.
+
+If a restart *fails*, a cooldown is persisted to disk (default 1h) and
+subsequent cycles short-circuit. A failed restart is almost always structural
+— a bad binary, a missing interpreter, a permissions problem — and retrying it
+in a tight loop only fills the logs. Manual triggers skip and clear the
+cooldown.
+
+## Embedding as a library
+
+The agent is designed to be embedded, not just run. No globals, injectable
+logger, pluggable `HealthChecker`, `RestartStrategy` and `HWInfoFunc`.
+
+```go
+import (
+    "github.com/carlosprados/ota-updater/pkg/agent"
+    "github.com/carlosprados/ota-updater/pkg/crypto"
+)
+
+pub, _ := crypto.LoadPublicKey("/etc/myapp/agent.pub")
+slots, _ := agent.NewSlotManager("/var/lib/myapp/slots", "/var/lib/myapp/current", logger)
+bootCnt, _ := agent.NewBootCounter("/var/lib/myapp/slots/.boot_count")
+
+client := &agent.HTTPClient{BaseURL: "https://update.example.com", HTTP: httpClient}
+pair, _ := agent.NewClientPair(client, &agent.HTTPTransport{HTTP: httpClient})
+
+watchdog, _ := agent.NewWatchdog(bootCnt, healthChecker, agent.WatchdogConfig{
+    Timeout: 60 * time.Second, Retries: 3, MaxBoots: 2,
+}, logger)
+
+updater, _ := agent.NewUpdater(agent.UpdaterDeps{
+    Config: agent.UpdaterConfig{
+        DeviceID: deviceID,
+        Artifact: "myapp/linux/arm64",
+        Version:  buildVersion,
+        StateDir: "/var/lib/myapp",
+    },
+    Primary:   pair,
+    Slots:     slots,
+    PublicKey: pub,
+    Watchdog:  watchdog,
+    Restart:   agent.ExecRestart{},
+    Logger:    logger,
+})
+
+if err := updater.BootPhase(ctx); err != nil { /* ... */ }
+go updater.Run(ctx)
+```
+
+{{% notice style="note" title="One Updater per artifact" %}}
+An `Updater` follows exactly one artifact. An embedder managing several
+components runs one `Updater` per component: they can share a
+`ProtocolClient`, but each needs its own slots directory and state directory.
+{{% /notice %}}
+
+`cmd/edge-agent/main.go` is a ~190-line reference wrapper around exactly this
+API — there is no private path it uses that an embedder cannot.
