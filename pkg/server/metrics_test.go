@@ -12,15 +12,20 @@ func TestMetrics_HandlerEmitsPrometheusFormat(t *testing.T) {
 	// Exercise a handful of paths so the output has non-zero lines.
 	m.ObserveHeartbeat("http", "none", 0.01)
 	m.ObserveHeartbeat("coap", "update", 0.2)
-	m.ObserveDeltaServe("http", "hit", 0.05)
+	m.ObserveDeltaServe("http", "hit", "delta", 0.05)
+	m.ObserveDeltaServe("http", "miss", "full", 0.20)
 	m.ObserveDeltaGeneration("ok", 1.5)
 	m.IncAdminRateLimited()
 	m.IncSignatureFailure()
 	m.SetManifestCacheEntries(17)
 	m.SetHotDeltaCacheBytes(1 << 20)
 	m.SetHotDeltaCacheEntries(3)
-	m.SetTargetBinarySize(8_000_000)
-	m.SetTargetInMemory(true)
+	m.SetTargetCacheBytes(8_000_000)
+	m.SetTargetCacheEntries(1)
+	m.SetArtifactCount(2)
+	m.SetArtifactTargetSize("app/linux/amd64", 8_000_000)
+	m.ObserveRetentionSweep("ok")
+	m.ObserveRetentionDeleted("delta", 1234)
 
 	srv := httptest.NewServer(m.Handler())
 	defer srv.Close()
@@ -43,7 +48,17 @@ func TestMetrics_HandlerEmitsPrometheusFormat(t *testing.T) {
 		`updater_signature_failures_total 1`,
 		`updater_manifest_cache_entries 17`,
 		`updater_hot_delta_cache_bytes 1.048576e+06`,
-		`updater_target_in_memory 1`,
+		`updater_target_cache_bytes 8e+06`,
+		`updater_target_cache_entries 1`,
+		`updater_artifacts 2`,
+		`updater_artifact_target_size_bytes{artifact="app/linux/amd64"} 8e+06`,
+		`updater_retention_sweeps_total{result="ok"} 1`,
+		`updater_retention_deleted_files_total{kind="delta"} 1`,
+		`updater_retention_reclaimed_bytes_total 1234`,
+		// mode distinguishes patch transfers from full-download fallbacks;
+		// a rising "full" share is the signal that retention is evicting
+		// source binaries the fleet still needs.
+		`updater_deltas_served_total{hot_hit="miss",mode="full",transport="http"} 1`,
 		`# HELP go_goroutines`, // confirms the Go collector is registered
 	}
 	for _, want := range required {
@@ -58,7 +73,7 @@ func TestMetrics_NilSafe(t *testing.T) {
 	// opt-in; tests that don't want the overhead pass nil.
 	var m *Metrics
 	m.ObserveHeartbeat("http", "none", 0)
-	m.ObserveDeltaServe("http", "hit", 0)
+	m.ObserveDeltaServe("http", "hit", "delta", 0)
 	m.ObserveDeltaGeneration("ok", 0)
 	m.ObserveAdminRequest("/admin/reload", 200)
 	m.IncAdminRateLimited()
@@ -68,8 +83,13 @@ func TestMetrics_NilSafe(t *testing.T) {
 	m.SetManifestCacheEntries(0)
 	m.SetHotDeltaCacheBytes(0)
 	m.SetHotDeltaCacheEntries(0)
-	m.SetTargetBinarySize(0)
-	m.SetTargetInMemory(false)
+	m.SetTargetCacheBytes(0)
+	m.SetTargetCacheEntries(0)
+	m.SetArtifactCount(0)
+	m.SetArtifactTargetSize("app/linux/amd64", 0)
+	m.DeleteArtifactTargetSize("app/linux/amd64")
+	m.ObserveRetentionSweep("error")
+	m.ObserveRetentionDeleted("binary", 0)
 }
 
 func TestCodeLabel(t *testing.T) {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/carlosprados/ota-updater/pkg/compression"
 	"github.com/carlosprados/ota-updater/pkg/crypto"
 	"github.com/carlosprados/ota-updater/pkg/delta"
 	"github.com/carlosprados/ota-updater/pkg/protocol"
@@ -28,6 +30,7 @@ type fakeClient struct {
 	heartbeatErr   error
 	heartbeatResp  *protocol.ManifestResponse
 	heartbeatCalls int
+	heartbeats     []*protocol.Heartbeat
 	reports        []*protocol.UpdateReport
 	reportErr      error
 }
@@ -38,6 +41,10 @@ func (c *fakeClient) Heartbeat(ctx context.Context, hb *protocol.Heartbeat) (*pr
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.heartbeatCalls++
+	if hb != nil {
+		cp := *hb
+		c.heartbeats = append(c.heartbeats, &cp)
+	}
 	if c.heartbeatErr != nil {
 		return nil, c.heartbeatErr
 	}
@@ -62,6 +69,16 @@ func (c *fakeClient) DeltaURL(endpoint string) string {
 	return c.name + "://server" + endpoint
 }
 
+// lastHeartbeat returns the most recent heartbeat the updater sent, or nil.
+func (c *fakeClient) lastHeartbeat() *protocol.Heartbeat {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.heartbeats) == 0 {
+		return nil
+	}
+	return c.heartbeats[len(c.heartbeats)-1]
+}
+
 func (c *fakeClient) snapshot() (heartbeatCalls int, reports []*protocol.UpdateReport) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -78,8 +95,9 @@ type fakeTransport struct {
 	body []byte
 	err  error
 
-	mu    sync.Mutex
-	calls int
+	mu      sync.Mutex
+	calls   int
+	lastURL string
 }
 
 func (t *fakeTransport) Name() string { return t.name }
@@ -87,6 +105,7 @@ func (t *fakeTransport) Name() string { return t.name }
 func (t *fakeTransport) FetchRange(ctx context.Context, rawURL string, offset int64) (io.ReadCloser, int64, error) {
 	t.mu.Lock()
 	t.calls++
+	t.lastURL = rawURL
 	t.mu.Unlock()
 	if t.err != nil {
 		return nil, 0, t.err
@@ -377,6 +396,166 @@ func TestRunOnce_HappyPath_WritesPendingAndExecsNewBinary(t *testing.T) {
 	// Staged delta must be cleaned up.
 	if _, err := os.Stat(f.updater.deltaStaging); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("staged delta should be removed; stat = %v", err)
+	}
+}
+
+// signedFullManifest builds the full-download variant: the transfer is the
+// whole zstd-compressed target rather than a patch. The signature covers
+// (targetHash, transferHash) exactly as in delta mode, which is what lets one
+// scheme serve both.
+func (f *updaterFixture) signedFullManifest() (*protocol.ManifestResponse, []byte) {
+	f.t.Helper()
+	packed, err := compression.CompressBytes(f.newBin)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	targetHash := sha256HexBytes(f.newBin)
+	transferHash := sha256HexBytes(packed)
+	payload, err := protocol.ManifestSigningPayload(targetHash, transferHash)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	sig, err := crypto.Sign(f.privKey, payload)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return &protocol.ManifestResponse{
+		UpdateAvailable: true,
+		TargetVersion:   "v2",
+		TargetHash:      targetHash,
+		TargetSize:      int64(len(f.newBin)),
+		DeltaSize:       int64(len(packed)),
+		DeltaHash:       transferHash,
+		Signature:       hex.EncodeToString(sig),
+		BinaryEndpoint:  protocol.BinaryPath(targetHash),
+	}, packed
+}
+
+// The full-download path is what rescues a device the server cannot diff
+// against. It must reconstruct the exact target without ever reading the
+// active slot.
+func TestRunOnce_FullDownload_ReconstructsWithoutActiveSlot(t *testing.T) {
+	f := newUpdaterFixture(t)
+	manifest, packed := f.signedFullManifest()
+	f.primary.heartbeatResp = manifest
+	f.transport.body = packed
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	_, activeHash, activeName, err := f.slots.ActiveSlot()
+	if err != nil {
+		t.Fatalf("ActiveSlot: %v", err)
+	}
+	if activeName != SlotNameB {
+		t.Fatalf("active name = %q, want %q after swap", activeName, SlotNameB)
+	}
+	if activeHash != sha256HexBytes(f.newBin) {
+		t.Fatalf("active hash mismatches the target binary")
+	}
+	newActive, err := os.ReadFile(filepath.Join(f.slotsDir, SlotNameB))
+	if err != nil {
+		t.Fatalf("read slot B: %v", err)
+	}
+	if !bytes.Equal(newActive, f.newBin) {
+		t.Fatalf("slot B content differs from the target binary")
+	}
+	if f.restart.calls != 1 {
+		t.Fatalf("restart calls = %d, want 1", f.restart.calls)
+	}
+}
+
+// The agent must fetch the binary endpoint, not the delta one.
+func TestRunOnce_FullDownload_UsesBinaryEndpoint(t *testing.T) {
+	f := newUpdaterFixture(t)
+	manifest, packed := f.signedFullManifest()
+	f.primary.heartbeatResp = manifest
+	f.transport.body = packed
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	want := protocol.BinaryPath(sha256HexBytes(f.newBin))
+	if !strings.Contains(f.transport.lastURL, want) {
+		t.Fatalf("fetched %q, want a URL containing %q", f.transport.lastURL, want)
+	}
+}
+
+// A manifest with neither endpoint is malformed and must abort before any
+// transfer is attempted.
+func TestRunOnce_NoEndpoint_Aborts(t *testing.T) {
+	f := newUpdaterFixture(t)
+	manifest, _ := f.signedFullManifest()
+	manifest.BinaryEndpoint = ""
+	manifest.DeltaEndpoint = ""
+	f.primary.heartbeatResp = manifest
+
+	err := f.updater.RunOnce(context.Background())
+	if err == nil {
+		t.Fatalf("expected an error when the manifest carries no endpoint")
+	}
+	if f.restart.calls != 0 {
+		t.Fatalf("restart must not run when no transfer happened")
+	}
+}
+
+// Corrupt full-download bytes that still match the signed transfer hash would
+// be a server bug, but the agent's last line of defence is the target hash
+// check after decompression. Here we corrupt in a way the transfer hash
+// cannot catch by re-signing garbage: the decompressed content will not hash
+// to TargetHash, so the swap must not happen.
+func TestRunOnce_FullDownload_WrongContentAborts(t *testing.T) {
+	f := newUpdaterFixture(t)
+	wrong, err := compression.CompressBytes([]byte("this is not the target binary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetHash := sha256HexBytes(f.newBin)
+	transferHash := sha256HexBytes(wrong)
+	payload, err := protocol.ManifestSigningPayload(targetHash, transferHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := crypto.Sign(f.privKey, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.primary.heartbeatResp = &protocol.ManifestResponse{
+		UpdateAvailable: true,
+		TargetVersion:   "v2",
+		TargetHash:      targetHash,
+		DeltaSize:       int64(len(wrong)),
+		DeltaHash:       transferHash,
+		Signature:       hex.EncodeToString(sig),
+		BinaryEndpoint:  protocol.BinaryPath(targetHash),
+	}
+	f.transport.body = wrong
+
+	if err := f.updater.RunOnce(context.Background()); err == nil {
+		t.Fatalf("expected a hash mismatch error")
+	}
+	_, _, activeName, _ := f.slots.ActiveSlot()
+	if activeName != SlotNameA {
+		t.Fatalf("active slot changed to %q despite the mismatch", activeName)
+	}
+	if f.restart.calls != 0 {
+		t.Fatalf("restart ran despite a failed reconstruction")
+	}
+}
+
+// The heartbeat must carry the configured artifact so a multi-artifact
+// server can route it.
+func TestRunOnce_SendsConfiguredArtifact(t *testing.T) {
+	f := newUpdaterFixture(t)
+	f.updater.cfg.Artifact = "keystone-agent/linux/arm64"
+	f.primary.heartbeatResp = &protocol.ManifestResponse{UpdateAvailable: false}
+
+	if err := f.updater.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if got := f.primary.lastHeartbeat(); got == nil || got.Artifact != "keystone-agent/linux/arm64" {
+		t.Fatalf("heartbeat artifact = %+v, want the configured key", got)
 	}
 }
 
@@ -810,7 +989,7 @@ func TestRunOnce_UnknownVersionAllow_Proceeds(t *testing.T) {
 
 func TestRunOnce_EmptyLocalVersion_DisablesGate(t *testing.T) {
 	f := newUpdaterFixture(t)
-	f.updater.cfg.Version = ""       // unversioned agent
+	f.updater.cfg.Version = ""          // unversioned agent
 	f.updater.cfg.MaxBump = MaxBumpNone // even the strictest cap
 
 	manifest, deltaBytes := f.signedManifest()

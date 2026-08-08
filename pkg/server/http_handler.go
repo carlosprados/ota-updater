@@ -13,6 +13,7 @@ import (
 // HTTPConfig bundles dependencies for the HTTP handler set.
 type HTTPConfig struct {
 	Store      *Store
+	Registry   *Registry
 	Manifester *Manifester
 	Logger     *slog.Logger
 	Metrics    *Metrics // optional; nil disables per-request metric emission
@@ -23,11 +24,13 @@ type HTTPConfig struct {
 //
 //	POST /heartbeat          → ManifestResponse
 //	GET  /delta/{from}/{to}  → compressed delta with Range support
+//	GET  /binary/{hash}      → whole compressed binary with Range support
 //	POST /report             → update report sink
 //	GET  /health             → server health probe
 func NewHTTPHandler(cfg HTTPConfig) http.Handler {
 	h := &httpHandler{
 		store:      cfg.Store,
+		registry:   cfg.Registry,
 		manifester: cfg.Manifester,
 		logger:     cfg.Logger,
 		metrics:    cfg.Metrics,
@@ -40,11 +43,13 @@ func NewHTTPHandler(cfg HTTPConfig) http.Handler {
 	mux.HandleFunc("POST "+protocol.PathReport, h.report)
 	mux.HandleFunc("GET "+protocol.PathHealth, h.health)
 	mux.HandleFunc("GET "+protocol.PathDelta+"/{from}/{to}", h.delta)
+	mux.HandleFunc("GET "+protocol.PathBinary+"/{hash}", h.binary)
 	return recoverHTTP(mux, h.logger)
 }
 
 type httpHandler struct {
 	store      *Store
+	registry   *Registry
 	manifester *Manifester
 	logger     *slog.Logger
 	metrics    *Metrics
@@ -71,31 +76,65 @@ func (h *httpHandler) heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.manifester.Build(r.Context(), &hb)
 	if err != nil {
+		// An unknown artifact is a client-side mistake (typo, misconfigured
+		// device), not a server fault — answering 500 would make it look like
+		// an outage in every dashboard.
+		if IsArtifactNotFound(err) {
+			h.logger.Warn("heartbeat for unknown artifact",
+				"op", "heartbeat", "device_id", hb.DeviceID,
+				"artifact", hb.Artifact, "err", err, "remote", r.RemoteAddr,
+			)
+			result = "unknown_artifact"
+			http.Error(w, "unknown artifact", http.StatusNotFound)
+			return
+		}
 		h.logger.Error("manifest build",
-			"op", "heartbeat", "device_id", hb.DeviceID, "err", err,
+			"op", "heartbeat", "device_id", hb.DeviceID,
+			"artifact", hb.Artifact, "err", err,
 		)
 		result = "error"
 		http.Error(w, "manifest build failed", http.StatusInternalServerError)
 		return
 	}
-	switch {
-	case !resp.UpdateAvailable:
-		result = "none"
-	case resp.RetryAfter > 0:
-		result = "retry"
-	default:
-		result = "update"
-	}
+	result = manifestResult(resp)
 	h.logger.Info("heartbeat served",
 		"op", "heartbeat",
 		"device_id", hb.DeviceID,
+		"artifact", resp.Artifact,
 		"from", hb.VersionHash,
-		"to", h.store.TargetHash(),
+		"to", resp.TargetHash,
 		"update_available", resp.UpdateAvailable,
+		"mode", transferMode(resp),
 		"retry_after", resp.RetryAfter,
 		"remote", r.RemoteAddr,
 	)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// manifestResult maps a response to the heartbeats_total result label.
+func manifestResult(resp *protocol.ManifestResponse) string {
+	switch {
+	case !resp.UpdateAvailable:
+		return "none"
+	case resp.RetryAfter > 0:
+		return "retry"
+	case resp.BinaryEndpoint != "":
+		return "full"
+	default:
+		return "update"
+	}
+}
+
+// transferMode names which transfer the manifest points at, for logs.
+func transferMode(resp *protocol.ManifestResponse) string {
+	switch {
+	case resp.BinaryEndpoint != "":
+		return "full"
+	case resp.DeltaEndpoint != "":
+		return "delta"
+	default:
+		return "none"
+	}
 }
 
 func (h *httpHandler) report(w http.ResponseWriter, r *http.Request) {
@@ -121,9 +160,15 @@ func (h *httpHandler) report(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *httpHandler) health(w http.ResponseWriter, _ *http.Request) {
+	arts := h.registry.List()
+	targets := make(map[string]string, len(arts))
+	for _, a := range arts {
+		targets[a.Key.String()] = a.TargetHash
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":      "ok",
-		"target_hash": h.store.TargetHash(),
+		"status":    "ok",
+		"artifacts": targets,
+		"default":   h.registry.Default(),
 	})
 }
 
@@ -133,7 +178,7 @@ func (h *httpHandler) delta(w http.ResponseWriter, r *http.Request) {
 	served := false
 	defer func() {
 		if served {
-			h.metrics.ObserveDeltaServe("http", hotHit, time.Since(start).Seconds())
+			h.metrics.ObserveDeltaServe("http", hotHit, "delta", time.Since(start).Seconds())
 		}
 	}()
 
@@ -144,10 +189,11 @@ func (h *httpHandler) delta(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// The agent only ever asks for deltas to the current target; any other
-	// to-hash is either stale or crafted, and we don't persist history on
-	// disk so there's nothing to serve.
-	if to != h.store.TargetHash() {
+	// Agents only ever ask for deltas toward a current target. Restricting
+	// the destination also bounds the work an unauthenticated request can
+	// trigger: a miss here dispatches a bsdiff, the most expensive thing
+	// this process does.
+	if !h.registry.IsCurrentTarget(to) {
 		http.NotFound(w, r)
 		return
 	}
@@ -158,7 +204,7 @@ func (h *httpHandler) delta(w http.ResponseWriter, r *http.Request) {
 		hotHit = "hit"
 	}
 
-	data, found, err := h.store.GetDeltaBytes(r.Context(), from)
+	data, found, err := h.store.GetDeltaBytes(r.Context(), from, to)
 	if err != nil {
 		h.logger.Error("fetch delta bytes",
 			"op", "delta_get", "from", from, "to", to, "err", err)
@@ -173,15 +219,69 @@ func (h *httpHandler) delta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	served = true
-	w.Header().Set("Content-Type", "application/octet-stream")
 	h.logger.Info("delta served",
 		"op", "delta_get", "from", from, "to", to,
 		"size", len(data), "range", r.Header.Get("Range"), "remote", r.RemoteAddr,
 	)
-	// http.ServeContent handles Range, Accept-Ranges, Content-Length, 206.
-	// Passing zero-valued time disables If-Modified-Since handling, which is
-	// fine: the delta bytes are immutable for a given (from, to) pair and
-	// the client validates via the SHA-256 in the signed manifest.
+	serveBytes(w, r, data)
+}
+
+// binary serves the whole compressed target for the full-download fallback.
+func (h *httpHandler) binary(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	hotHit := "miss"
+	served := false
+	defer func() {
+		if served {
+			h.metrics.ObserveDeltaServe("http", hotHit, "full", time.Since(start).Seconds())
+		}
+	}()
+
+	hash := r.PathValue("hash")
+	if !isValidHashSegment(hash) {
+		http.NotFound(w, r)
+		return
+	}
+	// Only bytes the registry still vouches for. Without this, the endpoint
+	// would happily hand out any binary ever registered, turning the store
+	// into an open mirror of every build the operator ever published.
+	if !h.registry.IsLive(hash) {
+		http.NotFound(w, r)
+		return
+	}
+	if _, ok := h.store.PeekHotBinary(hash); ok {
+		hotHit = "hit"
+	}
+
+	data, found, err := h.store.GetBinaryBytes(r.Context(), hash)
+	if err != nil {
+		h.logger.Error("fetch binary bytes",
+			"op", "binary_get", "hash", hash, "err", err)
+		http.Error(w, "fetch binary", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		h.logger.Warn("binary not in store",
+			"op", "binary_get", "hash", hash, "remote", r.RemoteAddr)
+		http.NotFound(w, r)
+		return
+	}
+	served = true
+	h.logger.Info("binary served",
+		"op", "binary_get", "hash", hash,
+		"size", len(data), "range", r.Header.Get("Range"), "remote", r.RemoteAddr,
+	)
+	serveBytes(w, r, data)
+}
+
+// serveBytes writes an immutable payload with Range support.
+//
+// http.ServeContent handles Range, Accept-Ranges, Content-Length and 206.
+// Passing a zero time disables If-Modified-Since handling, which is correct
+// here: the bytes are immutable for a given content address, and the agent
+// validates them against the SHA-256 in the signed manifest anyway.
+func serveBytes(w http.ResponseWriter, r *http.Request, data []byte) {
+	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
 }
 

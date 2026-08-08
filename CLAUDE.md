@@ -2,6 +2,22 @@
 
 Complementa a `~/.claude/CLAUDE.md` (no duplica git/idioma/estilo). Aplica a este proyecto.
 
+## Estado al cierre de sesión (2026-08-07)
+
+- Ramas creadas esta sesión: `ota/license-and-module-path` (commiteada) y
+  `ota/multi-artifact-server` (en curso). Ninguna mergeada a `main` todavía.
+- **Feedback externo recibido** (equipo Keystone) con 4 bloqueantes para poder
+  importar el repo. Estado:
+  1. ~~Module path no coincide con la URL~~ — resuelto: `github.com/amplia/ota-updater`
+     → `github.com/carlosprados/ota-updater` (54 referencias).
+  2. ~~Sin licencia~~ — resuelto: Apache-2.0 estándar, copyright Carlos Prados.
+  3. ~~Servidor no importable ni multi-artefacto~~ — resuelto en
+     `ota/multi-artifact-server` (ver decisión abajo).
+  4. Cuarto punto **no facilitado** por el usuario; pendiente de recibirlo.
+- Añadidos no pedidos explícitamente pero derivados del feedback: **descarga
+  completa** (sin ella un device con versión desconocida queda varado para
+  siempre) y **retención** (sin ella el disco crece sin techo con N×M×K).
+
 ## Estado al cierre de sesión (2026-04-17)
 
 - Rama activa: `ota/bootstrap-protocol-crypto`. Working tree limpio en el último commit.
@@ -33,13 +49,16 @@ Especificación canónica: `prompt-ota-updater.md` en la raíz. Cualquier desvia
 
 ```
 cmd/{edge-agent,update-server}/main.go
-pkg/{agent,protocol,crypto,delta,compression}/   # exported, importable as a library
-internal/server/                                  # binary-only: only used by cmd/update-server
+pkg/{agent,server,protocol,crypto,delta,compression,atomicio}/   # todo exportado e importable
 integration/                                      # //go:build integration end-to-end test
 tools/keygen/
 configs/{agent,server}.yaml
 docs/signing.md                                   # authoritative signature reference
 ```
+
+`internal/` ya no existe: `internal/server` se promovió a `pkg/server` para que
+Keystone (y cualquier tercero) pueda importar el servidor en vez de ejecutarlo
+como binario aparte.
 
 ## Orden de implementación
 
@@ -61,6 +80,44 @@ Decididas 2026-04-16:
 
 ## Decisiones de proyecto
 
+- **Servidor multi-artefacto** (decidido 2026-08-07, rama `ota/multi-artifact-server`).
+  Insight clave: el `Store` ya era content-addressed (`<hash>.bin`,
+  `<from>_<to>.delta.zst`), o sea **ya era multi-artefacto de facto**. Lo único
+  mono-artefacto era el estado "cuál es el target actual". Refactor resultante:
+  - `Store` pasa a CAS puro: fuera `TargetPath`/`TargetHash`/`Reload`; las APIs
+    toman `(from, to)` explícitos. El target-en-RAM deja de ser un único binario
+    y pasa a ser un LRU por presupuesto de bytes (`store.target_cache_mb`)
+    compartido por TODOS los artefactos — así N tracks no multiplican la RAM.
+  - Nuevo `pkg/server/registry.go`: `ArtifactKey{Name,OS,Arch}` → target actual +
+    versión + historial. Persiste en `store.state_file` (sin eso, todo lo
+    publicado por API se pierde al reiniciar). Config manda sobre lo persistido
+    para los artefactos que declara.
+  - `protocol.ArtifactKey` con validación estricta de charset (las claves acaban
+    en paths HTTP, en bookkeeping de retención y en campos de log).
+  - `Heartbeat.Artifact` (CBOR tag 6, omitempty). Vacío ⇒ artefacto por defecto:
+    los despliegues mono-artefacto y los agentes antiguos siguen funcionando sin
+    cambios. `target:` en YAML se pliega a un artefacto llamado `default`.
+  - Un `Updater` sigue exactamente un artefacto; quien gestione varios levanta un
+    `Updater` por componente.
+- **Descarga completa como fallback** (decidido 2026-08-07). Un device cuyo
+  binario el servidor no tiene (flasheo de fábrica, sideload, origen expirado por
+  retención, slot corrupto) recibía `update_available=false` en cada heartbeat:
+  varado en silencio y para siempre. Ahora el servidor sirve el target entero
+  comprimido en `binary_endpoint`. **El esquema de firma NO cambia**: el payload
+  siempre fue `(targetHash, hash de los bytes que viajan)`; en modo full esos
+  bytes son el target comprimido. Servirlo comprimido es lo que mantiene el
+  esquema uniforme (en crudo degeneraría a `H || H`). El selector de modo no va
+  firmado pero falla seguro: al invertirlo, la reconstrucción no casa con
+  `targetHash` y se aborta antes del swap. Knob: `manifest.allow_full_download`
+  (default true). Ver `docs/signing.md` §2.2.
+- **Retención** (decidido 2026-08-07). `pkg/server/retention.go`. Separa dos
+  clases: artefactos derivados (deltas y binarios comprimidos) son caché pura y
+  se recogen agresivamente; los binarios son la única copia de algo que produjo
+  el operador y sólo se borran con `collect_orphan_binaries` explícito, sin
+  referencias y pasado `orphan_binary_min_age` (la ventana entre `RegisterBinary`
+  y el `Publish` que lo referencia es una carrera real). Recoger un binario nunca
+  deja varado a nadie: el device cae al full download. Default `enabled: false`.
+  Endpoint `POST /admin/gc` para barrer bajo demanda.
 - **Firma Ed25519 sobre `targetHash || deltaHash`** (opción B, decidida 2026-04-16). El payload canónico lo construye `protocol.ManifestSigningPayload`. Permite al agente abortar una descarga corrupta antes de parchear (ahorra downlink NB-IoT), sin renunciar a la autenticidad del binario activado. Coste: firma por-par `(from,to)`, marginal con Ed25519. **Documentación autoritativa en [`docs/signing.md`](docs/signing.md)** — cualquier cambio que toque firmas debe actualizar ese fichero en el mismo commit.
 - **Logging con `log/slog` (stdlib)**, nivel configurable y **cambiable en runtime** (decidido 2026-04-16). Config: `logging.level` (`debug|info|warn|error`) y `logging.format` (`text|json`). En runtime: `POST /admin/loglevel` con el mismo bearer token que `/admin/reload`. Niveles: DEBUG detalles internos, INFO operaciones normales, WARN anomalías recuperables, ERROR fallos. Campos obligatorios: `device_id`, `from`, `to`, `remote`, `op` en servidor; `device_id`, `version_hash`, `operation` en agente.
 - **Self-restart del agente tras swap** (decidido 2026-04-17): `syscall.Exec` por defecto, detrás de una interfaz `RestartStrategy` pluggable. Se envía una segunda implementación lista `ExitRestart` para quien prefiera `os.Exit(0)` + relanzamiento del supervisor. Justificación: `syscall.Exec` mantiene PID, cgroup, env vars y FDs, es transparente para systemd (cualquier `Type=`, incluido `notify` reenviando `sd_notify(READY=1)` tras exec) y para Docker (PID 1 no cambia). Requisitos operativos: en Docker los slots A/B deben vivir en un volumen persistente; `ExecStart=` de systemd debe apuntar al symlink `current/edge-agent` (estable). Detalle completo en `README.md` §"Self-restart after swap".
@@ -119,7 +176,12 @@ task clean              # rm bin/ y store/deltas/
 - Paths de recurso (HTTP y CoAP) idénticos — definidos en `pkg/protocol/constants.go`. Handlers de transporte **mirror**.
 - Logging: `slog` con campos estructurados. Campos obligatorios en agente: `device_id`, `version_hash`, `operation`. En servidor: `device_id`, `op`.
 - Errores: siempre `fmt.Errorf("operación: %w", err)`. Sin `errors.New` en rutas de error con contexto útil.
-- Rama de trabajo actual: `ota/bootstrap-protocol-crypto` (cortada desde `main`). Seguir convención `ota/<feature>` para las siguientes.
+- Rama de trabajo actual: `ota/multi-artifact-server`. Seguir convención `ota/<feature>`.
+- **El repo NO está `gofmt`-limpio** de antes: 9 ficheros con drift previo
+  (`pkg/agent/{config,slots,updater,client_test,updater_test}.go`,
+  `pkg/protocol/messages.go`, `cmd/edge-agent/main.go`, etc.). Deuda conocida; no
+  se arregló en la rama multi-artefacto para no inflar el diff. Ficheros nuevos y
+  reescritos sí van formateados.
 
 ## Estado
 

@@ -59,7 +59,12 @@ type CoAPClientConfig struct {
 
 // DeviceConfig identifies the device and locates its slot layout on disk.
 type DeviceConfig struct {
-	ID            string `yaml:"id"`
+	ID string `yaml:"id"`
+	// Artifact names the publication track this agent follows, in canonical
+	// ArtifactKey form ("keystone-agent/linux/arm64"). Empty asks the server
+	// for its default artifact, which is what a single-artifact deployment
+	// wants and what pre-multi-artifact agents send.
+	Artifact      string `yaml:"artifact"`
 	SlotsDir      string `yaml:"slots_dir"`
 	ActiveSymlink string `yaml:"active_symlink"`
 	// DiskSpaceMinFreePct and DiskSpaceMinFreeMB drive a startup warning

@@ -21,15 +21,16 @@ also update the relevant docstrings in the same commit.
 ## 2. What is signed (canonical payload)
 
 ```
-payload = target_hash_raw || delta_hash_raw           // 32 + 32 = 64 bytes
+payload = target_hash_raw || transfer_hash_raw        // 32 + 32 = 64 bytes
 signature = Ed25519.Sign(server_private_key, payload)
 ```
 
 - `target_hash_raw` — raw 32-byte SHA-256 of the **reconstructed target
   binary** (i.e. what will actually run on the device after patching).
-- `delta_hash_raw` — raw 32-byte SHA-256 of the **zstd-compressed delta
-  bytes as transferred on the wire**. Exactly the bytes the agent
-  downloads; no other transformation.
+- `transfer_hash_raw` — raw 32-byte SHA-256 of **the bytes that travel on
+  the wire**. Exactly the bytes the agent downloads; no other
+  transformation. It occupies the `delta_hash` wire field, whose name
+  predates the full-download mode (see §2.2).
 - Concatenation is strict byte-wise, target first, delta second. **No
   separators, no length prefix, no version byte.** Both hashes are the
   same algorithm (SHA-256) and fixed length (32 bytes), so there is no
@@ -40,6 +41,44 @@ signature = Ed25519.Sign(server_private_key, payload)
 
 Implementation: `pkg/protocol/signing.go` →
 `ManifestSigningPayload(targetHashHex, deltaHashHex) []byte`.
+
+### 2.2 Two transfer modes, one signature scheme
+
+The server answers a heartbeat in one of two modes, and the manifest sets
+exactly one endpoint field to say which:
+
+| Mode | Endpoint field | Bytes on the wire | Agent does |
+|---|---|---|---|
+| **delta** | `delta_endpoint` | zstd(bsdiff patch) | verify → `bspatch` onto the running binary |
+| **full** | `binary_endpoint` | zstd(whole target) | verify → decompress |
+
+The full-download mode exists because the delta mode structurally cannot
+serve a device whose current binary the server does not have: a
+factory-flashed unit, a sideloaded build, or a version whose source binary
+aged out of retention. Without it such a device is told "no update
+available" on every heartbeat, forever.
+
+**The signature scheme does not change between modes.** The signed payload
+is always `(target_hash, transfer_hash)`, because `transfer_hash` is
+defined as "the hash of whatever bytes are transferred". In delta mode
+those bytes are the compressed patch; in full mode they are the compressed
+target. A full download is, formally, a delta from nothing.
+
+Consequences worth stating explicitly:
+
+- Serving the full binary **compressed** is what keeps the scheme
+  uniform. If it were served raw, `transfer_hash` would equal
+  `target_hash` and the payload would degenerate to `H || H`.
+- The mode selector (which endpoint field is set) is **not** covered by
+  the signature. This fails safe in both directions: an attacker who flips
+  the mode causes the agent to `bspatch` a compressed binary, or to treat
+  a patch as a compressed binary. Either way the reconstruction does not
+  hash to the authenticated `target_hash` and the agent aborts before the
+  swap. The cost of such an attack is a wasted download, never a wrong
+  binary running.
+- In full mode the agent **never reads its active slot**, so the path also
+  recovers a device whose current binary is corrupt — the one case where
+  patching could not work even if the server had the source.
 
 ### 2.1 Encoding on the wire
 
@@ -81,29 +120,39 @@ Implementation: `pkg/crypto/{signer,verifier}.go`,
 
 ## 4. Server-side flow (on every heartbeat)
 
-1. Agent POSTs `Heartbeat{device_id, version_hash, …}`.
-2. Server compares `version_hash` against the in-memory `target_hash`
-   (computed once at store Open() from the target binary file):
+1. Agent POSTs `Heartbeat{device_id, version_hash, artifact, …}`.
+2. Server resolves `artifact` to a publication track (empty → the default
+   track). An unknown artifact is answered **404**, never a signed
+   manifest.
+3. Server compares `version_hash` against that track's `target_hash`:
    - If equal → `UpdateAvailable=false`. **No signature**.
-3. If the agent's source binary is unknown to the store (no matching
-   `{hash}.bin` under `binaries_dir`) → `UpdateAvailable=false` with a
-   log warning. **No signature**.
-4. If the delta is not yet cached → dispatch async generation,
-   respond `UpdateAvailable=true` + `RetryAfter>0`. **No signature**;
-   the agent will retry.
-5. Otherwise, the delta is cached at `{from}_{to}.delta.zst`:
-   1. Read the compressed bytes.
-   2. `delta_hash = SHA256(compressed_delta)`.
-   3. Build canonical payload (see §2).
-   4. `signature = Ed25519.Sign(priv, payload)`.
-   5. Return the full `ManifestResponse` including `target_hash`,
-      `delta_hash`, `signature`, `delta_endpoint`, and chunking metadata.
+4. If the agent's source binary **is** in the store (`{hash}.bin` under
+   `binaries_dir`), take the delta path:
+   1. If the delta is not yet cached → dispatch async generation, respond
+      `UpdateAvailable=true` + `RetryAfter>0`. **No signature**; the agent
+      retries.
+   2. Otherwise read `{from}_{to}.delta.zst`, set
+      `transfer_hash = SHA256(compressed_delta)`, sign, and return the
+      manifest with `delta_endpoint` set.
+5. If the source binary is **not** in the store, take the full-download
+   path (unless `manifest.allow_full_download` is false, in which case
+   answer `UpdateAvailable=false` and leave the device stranded — see
+   §2.2 for why that is rarely what you want):
+   1. Materialize `{target}.full.zst` (zstd of the whole target).
+   2. `transfer_hash = SHA256(compressed_target)`.
+   3. Sign the same canonical payload as in the delta path.
+   4. Return the manifest with `binary_endpoint` set instead.
+
+In both cases the response carries `target_hash`, `delta_hash`
+(= `transfer_hash`), `signature`, and chunking metadata.
 
 Signatures are **not cached** on disk. Ed25519 signing is sub-millisecond;
 always rebuilding the signature removes a whole class of cache-staleness
-bugs (e.g. signature cached with stale `delta_hash`).
+bugs (e.g. signature cached with stale `transfer_hash`). Signed manifests
+ARE memoized in RAM, keyed by `(artifact, from, to)`; the cache is dropped
+whenever a track's target or version label changes.
 
-Implementation: `internal/server/manifest.go` → `Manifester.Build`.
+Implementation: `pkg/server/manifest.go` → `Manifester.Build`.
 
 ---
 
@@ -117,28 +166,33 @@ non-empty `Signature`:
 2. **Verify signature** with `crypto.Verify(pub, payload, sig)`.
    - If verification fails → **abort immediately**. Do not download.
      Log and optionally report failure.
-3. **Download** the compressed delta from `DeltaEndpoint` (with Range
-   support; resumable).
-4. **Check integrity**: compute SHA-256 of the downloaded bytes;
-   compare against `DeltaHash`.
+3. **Pick the transfer mode**: `BinaryEndpoint` non-empty → full;
+   otherwise `DeltaEndpoint` → delta. Neither set → malformed manifest,
+   abort.
+4. **Download** from that endpoint (with Range support; resumable).
+5. **Check integrity**: compute SHA-256 of the downloaded bytes; compare
+   against `DeltaHash`.
    - If mismatch → **abort before patching**. This is the NB-IoT save.
-5. **Decompress** (zstd) **and apply** (bspatch) to the active slot
-   binary, writing to the inactive slot.
-6. **Verify reconstruction**: SHA-256 of the inactive slot contents
+6. **Reconstruct**:
+   - delta mode → decompress (zstd) and apply (bspatch) to the active
+     slot binary, writing to the inactive slot;
+   - full mode → decompress (zstd) straight into the inactive slot. The
+     active slot is never read.
+7. **Verify reconstruction**: SHA-256 of the inactive slot contents
    must equal `TargetHash`.
    - If mismatch → abort. Do not swap.
-7. **Atomic swap** of the active symlink.
-8. Exec/restart; watchdog confirms health.
+8. **Atomic swap** of the active symlink.
+9. Exec/restart; watchdog confirms health.
 
 The order matters:
 - Step 2 rejects an MitM sending a bad manifest.
-- Step 4 rejects an MitM sending a corrupt delta, **after only
-  downloading bytes** — no CPU wasted on bspatch.
-- Step 6 is redundant with steps 2+4 under honest failure modes but
-  catches local disk corruption or bspatch bugs.
+- Step 5 rejects an MitM sending corrupt bytes, **after only downloading
+  them** — no CPU wasted on bspatch.
+- Step 7 is redundant with steps 2+5 under honest failure modes but
+  catches local disk corruption, bspatch bugs, and a flipped transfer
+  mode (§2.2).
 
-Implementation will live in `pkg/agent/updater.go` (step 14 of
-the plan).
+Implementation: `pkg/agent/updater.go` → `Updater.RunOnce`.
 
 ---
 
@@ -172,23 +226,31 @@ Three schemes were considered:
 | # | What is signed | Pros | Cons |
 |---|---|---|---|
 | A | `target_hash` only | Simplest. Signatures could conceivably be pre-computed offline. | Agent only detects a corrupt delta **after** downloading **and** running `bspatch`. Wastes scarce downlink **and** CPU. |
-| **B** (chosen) | `target_hash ‖ delta_hash` | Detects corrupt delta after download, before `bspatch`. Target binary activation still authenticated. Cheap (Ed25519 ~50 µs). | Signatures must be per `(from, to)` pair. In this design that is free because the server signs at manifest time, not at cache time. |
+| **B** (chosen) | `target_hash ‖ transfer_hash` | Detects corrupt delta after download, before `bspatch`. Target binary activation still authenticated. Cheap (Ed25519 ~50 µs). | Signatures must be per `(from, to)` pair. In this design that is free because the server signs at manifest time, not at cache time. |
 | C | Two independent signatures (`target_hash` and `delta_hash`) | Explicitly separable; could use different keys. | Extra wire field. No real benefit over B. |
 
 **Chosen: B.** The `target_hash` anchor keeps activation authenticity
-(what actually runs on the device) while the `delta_hash` anchor keeps
+(what actually runs on the device) while the `transfer_hash` anchor keeps
 NB-IoT downlink budgets from being wasted on corrupt payloads.
+
+A late benefit of B: because the second half of the payload is defined as
+"the bytes on the wire" rather than "the patch", adding the full-download
+mode required **no change to the scheme at all** — see §2.2.
 
 ---
 
 ## 8. Threat model considerations
 
 - **MitM tampering with manifest**: blocked at agent step 2.
-- **MitM tampering with delta payload**: blocked at agent step 4
-  (before CPU waste).
+- **MitM tampering with the transferred payload**: blocked at agent
+  step 5 (before CPU waste), in both delta and full mode.
+- **MitM flipping the transfer mode** (swapping which endpoint field is
+  set): the mode is not signed, but the flip cannot produce a valid
+  binary — reconstruction fails the `target_hash` check at step 7 and the
+  swap never happens. Cost is a wasted download. See §2.2.
 - **MitM replaying an old signed manifest**: possible if both
-  `target_hash` and `delta_hash` match something the server previously
-  signed. The agent will happily apply an old-but-valid delta.
+  `target_hash` and `transfer_hash` match something the server previously
+  signed. The agent will happily apply an old-but-valid transfer.
   Mitigation (future work): include a monotonic counter or timestamp
   in the signed payload if replay becomes a concern.
 - **Compromise of `server.key`**: the attacker can sign any delta for
@@ -213,6 +275,6 @@ NB-IoT downlink budgets from being wasted on corrupt payloads.
 | Sign / Verify primitives | `pkg/crypto/signer.go`, `pkg/crypto/verifier.go` |
 | Wire field definition | `pkg/protocol/messages.go` → `ManifestResponse.Signature` |
 | Key generation CLI | `tools/keygen/main.go` |
-| Server-side assembly | `internal/server/manifest.go` → `Manifester.Build` |
+| Server-side assembly | `pkg/server/manifest.go` → `Manifester.Build` |
 | Agent-side verification order | `pkg/agent/updater.go` (step 14, pending) |
-| Tests covering signatures | `pkg/crypto/crypto_test.go`, `pkg/protocol/signing_test.go`, `internal/server/manifest_test.go`, `internal/server/http_handler_test.go` |
+| Tests covering signatures | `pkg/crypto/crypto_test.go`, `pkg/protocol/signing_test.go`, `pkg/server/manifest_test.go`, `pkg/server/http_handler_test.go` |
