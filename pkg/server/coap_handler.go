@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -98,6 +99,14 @@ func (c *coapHandler) heartbeat(w mux.ResponseWriter, r *mux.Message) {
 	}
 	resp, err := c.manifester.Build(r.Context(), &hb)
 	if err != nil {
+		if errors.Is(err, protocol.ErrInvalidMessage) {
+			c.logger.Warn("malformed heartbeat rejected",
+				"op", "heartbeat", "transport", "coap", "err", err,
+			)
+			result = "bad_request"
+			c.respond(w, codes.BadRequest, message.TextPlain, readerOf("invalid heartbeat"))
+			return
+		}
 		if IsArtifactNotFound(err) {
 			c.logger.Warn("heartbeat for unknown artifact",
 				"op", "heartbeat", "transport", "coap", "device_id", hb.DeviceID,
@@ -150,6 +159,12 @@ func (c *coapHandler) report(w mux.ResponseWriter, r *mux.Message) {
 		c.respond(w, codes.BadRequest, message.TextPlain, nil)
 		return
 	}
+	if err := rep.Validate(); err != nil {
+		c.logger.Warn("malformed report rejected",
+			"op", "report", "transport", "coap", "err", err)
+		c.respond(w, codes.BadRequest, message.TextPlain, nil)
+		return
+	}
 	c.logger.Info("update report",
 		"device_id", rep.DeviceID,
 		"previous_hash", rep.PreviousHash,
@@ -181,7 +196,7 @@ func (c *coapHandler) delta(w mux.ResponseWriter, r *mux.Message) {
 	}
 	from := r.RouteParams.Vars["from"]
 	to := r.RouteParams.Vars["to"]
-	if !isValidHashSegment(from) || !isValidHashSegment(to) {
+	if !protocol.IsValidHash(from) || !protocol.IsValidHash(to) {
 		c.respond(w, codes.NotFound, message.TextPlain, nil)
 		return
 	}
@@ -244,7 +259,7 @@ func (c *coapHandler) binary(w mux.ResponseWriter, r *mux.Message) {
 		return
 	}
 	hash := r.RouteParams.Vars["hash"]
-	if !isValidHashSegment(hash) || !c.registry.IsLive(hash) {
+	if !protocol.IsValidHash(hash) || !c.registry.IsLive(hash) {
 		c.respond(w, codes.NotFound, message.TextPlain, nil)
 		return
 	}

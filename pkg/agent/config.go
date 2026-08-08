@@ -55,6 +55,9 @@ type CoAPClientConfig struct {
 	ACKTimeout     time.Duration `yaml:"ack_timeout"`     // per-CON ACK window
 	MaxRetransmits int           `yaml:"max_retransmits"` // RFC 7252 §4.8 default = 4
 	Keepalive      time.Duration `yaml:"keepalive"`       // 0 disables
+	// DialTimeout bounds socket setup, which over UDP is really name
+	// resolution. 0 keeps go-coap's 3s default.
+	DialTimeout time.Duration `yaml:"dial_timeout"`
 }
 
 // DeviceConfig identifies the device and locates its slot layout on disk.

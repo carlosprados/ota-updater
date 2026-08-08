@@ -12,11 +12,17 @@ server:
   transport: "coap"                              # "coap" or "http"
   fallback: true                                 # try the other transport once per cycle on failure
 
+  # Every key below is applied to each CoAP connection the agent opens, for
+  # both the heartbeat/report leg and the delta download leg. Leave a key at
+  # 0 (or omit it) to keep go-coap's default, which is tuned for ordinary
+  # networks rather than for multi-second round trips.
   coap:
     block_size: 512                              # RFC 7959 Block2 size (power of 2, 16..1024)
     ack_timeout: "60s"                           # generous for NB-IoT CON exchanges
     max_retransmits: 4                           # RFC 7252 default
     keepalive: "2m"                              # 0 disables
+    dial_timeout: "30s"                          # socket setup; over UDP this is
+                                                 #   really name resolution. 0 = 3s default
 
 device:
   id: "edge-001"                                 # unique per device

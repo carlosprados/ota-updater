@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -79,6 +80,14 @@ func (h *httpHandler) heartbeat(w http.ResponseWriter, r *http.Request) {
 		// An unknown artifact is a client-side mistake (typo, misconfigured
 		// device), not a server fault — answering 500 would make it look like
 		// an outage in every dashboard.
+		if errors.Is(err, protocol.ErrInvalidMessage) {
+			h.logger.Warn("malformed heartbeat rejected",
+				"op", "heartbeat", "err", err, "remote", r.RemoteAddr,
+			)
+			result = "bad_request"
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if IsArtifactNotFound(err) {
 			h.logger.Warn("heartbeat for unknown artifact",
 				"op", "heartbeat", "device_id", hb.DeviceID,
@@ -147,6 +156,14 @@ func (h *httpHandler) report(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid report", http.StatusBadRequest)
 		return
 	}
+	// Reports are a pure sink, but every field below is logged: bound them
+	// before they reach the log, not after.
+	if err := rep.Validate(); err != nil {
+		h.logger.Warn("malformed report rejected",
+			"op", "report", "err", err, "remote", r.RemoteAddr)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	h.logger.Info("update report",
 		"op", "report",
 		"device_id", rep.DeviceID,
@@ -185,7 +202,7 @@ func (h *httpHandler) delta(w http.ResponseWriter, r *http.Request) {
 	from := r.PathValue("from")
 	to := r.PathValue("to")
 
-	if !isValidHashSegment(from) || !isValidHashSegment(to) {
+	if !protocol.IsValidHash(from) || !protocol.IsValidHash(to) {
 		http.NotFound(w, r)
 		return
 	}
@@ -238,7 +255,7 @@ func (h *httpHandler) binary(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	hash := r.PathValue("hash")
-	if !isValidHashSegment(hash) {
+	if !protocol.IsValidHash(hash) {
 		http.NotFound(w, r)
 		return
 	}
@@ -289,22 +306,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-// isValidHashSegment accepts exactly 64 lowercase hex chars (SHA-256 hex).
-// Rejecting everything else defends against path traversal regardless of how
-// the mux resolves the template.
-func isValidHashSegment(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for _, c := range s {
-		switch {
-		case c >= '0' && c <= '9':
-		case c >= 'a' && c <= 'f':
-		default:
-			return false
-		}
-	}
-	return true
 }

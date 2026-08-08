@@ -191,11 +191,11 @@ func TestHTTP_Delta_InvalidHashSegment(t *testing.T) {
 }
 
 func TestHTTP_Report(t *testing.T) {
-	base, _, done := httpFixture(t)
+	base, f, done := httpFixture(t)
 	defer done()
 
 	body, _ := json.Marshal(protocol.UpdateReport{
-		DeviceID: "dev-1", PreviousHash: "p", NewHash: "n", Success: true,
+		DeviceID: "dev-1", PreviousHash: f.OldHash, NewHash: f.TargetHash, Success: true,
 	})
 	resp, err := http.Post(base+protocol.PathReport, "application/json", bytes.NewReader(body))
 	if err != nil {

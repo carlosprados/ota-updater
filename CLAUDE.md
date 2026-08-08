@@ -78,6 +78,41 @@ Decididas 2026-04-16:
 - **Block size por defecto: 512 bytes** (RFC 7959). Configurable 16..1024. Razonable para NB-IoT sin arriesgar fragmentación IP.
 - **Serialización CoAP: CBOR** (tags `cbor:"N,keyasint"` ya en `pkg/protocol/messages.go`). HTTP sigue con JSON. Servidor responde según content-type/accept.
 
+## Hallazgos del review externo (2026-08-08) — arreglados
+
+Handoff externo (fichero no versionado, sólo local). Los 7 ítems eran reales; verificados
+contra el código, no leídos. Dos matices que el handoff no acertaba:
+
+- **Traversal en `Heartbeat.VersionHash`** (su ítem 2). Lo calificaba de
+  "explotabilidad baja" apoyándose en que "la rama full-download sirve el target
+  del registry". **Ese argumento no aplica**: con un `*.bin` alcanzable, `HasBinary`
+  devuelve true y se toma la rama **delta**. Lo verifiqué con una sonda: el delta
+  se escribía FUERA de `deltas_dir`, tras correr bsdiff (pico ~20× del fichero)
+  contra un fichero elegido por el atacante → **OOM no autenticado**. Lo que sí
+  se le escapó como mitigación: el contenido no se exfiltra, porque
+  `/delta/{from}/{to}` valida hex-64 y la descarga da 404. Neto: más grave en
+  disponibilidad, menos en confidencialidad.
+  **Arreglo**: `protocol.IsValidHash` compartido + gate en `Manifester.Build`.
+  **Decisión de diseño**: un `VersionHash` inválido NO da 400 — degrada a
+  descarga completa. Rechazarlo dejaría varado a un device con estado corrupto,
+  que es justo el fallo que la descarga completa existe para eliminar.
+- **`DialTimeout` muerto** (su ítem 1). Era peor: **los cuatro knobs de
+  `server.coap` estaban muertos** (`block_size`, `ack_timeout`,
+  `max_retransmits`, `keepalive`), y `ack_timeout` además **mal cableado** —
+  se pasaba como *dial* timeout, que luego se ignoraba. Y el default de go-coap
+  no es ilimitado, son 3 s: el daño real es que un operador que configure un
+  timeout largo para NB-IoT lento se queda en 3 s en silencio.
+  **Arreglo**: `pkg/agent/coap_dial.go` con `CoAPOptions` compartido por
+  `CoAPClient` y `CoAPTransport`, un único `dialCoAP` que además pasa el `ctx`
+  (antes no se podía cancelar un dial).
+
+Resto: caché de manifests colapsada a una entrada para orígenes desconocidos
+(su ítem 3); `Swap`/`Rollback` documentados como toggles + `SwapTo`/`RollbackTo`
+verificados y validación de layout en `NewSlotManager` (ítem 4); comentario de
+`docs.yml` corregido — `workflow_dispatch` sobre un commit ya desplegado es un
+no-op silencioso porque Pages clavea por SHA (ítem 7); ítems 5 y 6 a
+documentación.
+
 ## Decisiones de proyecto
 
 - **Servidor multi-artefacto** (decidido 2026-08-07, rama `ota/multi-artifact-server`).

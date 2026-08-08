@@ -16,7 +16,17 @@ larger, which defeats the purpose entirely. If you need to ship something that
 big, the full-download path works — you just lose the delta advantage.
 
 **`go-bsdiff` is not actively maintained.** Validate early against your real
-binaries. `icedream/go-bsdiff` and `xdelta3` are the tracked alternatives.
+binaries. `icedream/go-bsdiff`, `xdelta3` and **`zstd --patch-from`** are the
+tracked alternatives.
+
+`zstd --patch-from` is worth a benchmark before committing to bsdiff forever.
+One reported measurement on 34 MiB Go binaries: a 2.07 MiB patch against
+bsdiff's 1.03 MiB — twice the downlink — but applied in 0.04 s with 70 MiB RSS,
+**streaming**, versus bsdiff's in-memory round trip. On a constrained device
+the smaller peak may matter more than the smaller patch, and it removes the
+20× ceiling on the server too. Those numbers are second-hand and have not been
+reproduced here; `benchmark/` in the repository is the place to settle it
+against your own binaries.
 
 ## Deferred by design
 
@@ -28,6 +38,26 @@ normally.
 *Why deferred:* HTTP is the preferred transport for large transfers, where
 resume actually matters; CoAP is acceptable for small deltas.
 *Mitigation:* prefer `transport: http` when targets exceed ~100 KiB.
+
+**This is the top of the CoAP backlog, above DTLS.** The CoAP path exists for
+links too poor for HTTPS — and those are exactly the links where a transfer
+gets interrupted. A 1 MiB delta at 20–60 kbps is two to seven minutes of radio
+that any interruption throws away in full. Confidentiality of an
+already-signed binary is a weaker requirement than finishing the download at
+all.
+
+### Device-side memory during a CoAP transfer
+
+The CoAP path buffers the entire payload in memory (`resp.ReadBody()`), and
+`bsdiff`'s `[]byte` API then holds the old binary, the new binary and the
+patch simultaneously. Peak device-side RSS is therefore roughly
+
+    old + new + patch + transfer buffer
+
+which for a 2 MiB binary with a 200 KiB patch lands near 6 MiB on top of the
+process baseline. Size `GOMEMLIMIT` and the cgroup limit accordingly — see
+[Operations]({{% relref "/operations" %}}). This is the device-side analogue
+of the server's ~20× `bsdiff` ceiling.
 
 ### Per-IP admin rate limiting
 
@@ -80,6 +110,22 @@ systemd restarts into the *old* binary after a swap.
 
 **Retention off means unbounded disk.** It is off by default for safety, which
 means the default configuration grows forever. Turn it on before you need it.
+
+**Retention silently converts deltas into full downloads.** Sweeping a binary
+that devices still run does not break them — the full-download path catches it
+— but every device on that version switches from a small patch to the whole
+compressed target. On NB-IoT that is the difference between a minute and a
+quarter of an hour. `history_depth` is the knob that decides how far behind a
+device may fall before it pays that cost, and
+`updater_deltas_served_total{mode="full"}` is how you notice it happening.
+
+**Hot-cache sizing changed meaning with multi-artifact.** `hot_delta_cache_mb`
+used to be sized against one target's working set; it is now shared across
+every artifact being served concurrently. An artifact whose transfers exceed
+the whole budget is never cached at all — the byte-budget LRU rejects values
+larger than itself — so every request re-reads it from disk, including each
+Range request from a resuming device. Size it against the sum of the artifacts
+you expect to be mid-campaign at once, not against the largest one.
 
 **`store.state_file` is effectively mandatory.** Without it, artifacts
 published through the admin API vanish on restart.
