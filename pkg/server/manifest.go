@@ -153,6 +153,21 @@ func (m *Manifester) Build(ctx context.Context, hb *protocol.Heartbeat) (*protoc
 	// so it is resolved before the cache lookup.
 	known := protocol.IsValidHash(hb.VersionHash) && m.store.HasBinary(hb.VersionHash)
 
+	// Size budget. This has to be decided HERE and not left to the store: if
+	// we dispatched a generation the store then refused, the device would be
+	// told "retry later" on every heartbeat, forever. Instead the pair simply
+	// stops being diffable and the full-download path takes over, which is
+	// slower on the wire but always terminates.
+	if known {
+		if ok, reason := m.store.CanDiff(hb.VersionHash, targetHash); !ok {
+			m.logger.Warn("delta skipped: over the size budget, serving the full target",
+				"op", "manifest", "device_id", hb.DeviceID, "artifact", artifactKey,
+				"from", hb.VersionHash, "to", targetHash, "reason", reason,
+			)
+			known = false
+		}
+	}
+
 	// Unknown sources all receive the SAME response: the full-download
 	// manifest depends only on the target, never on what the device claims to
 	// be running. Collapsing them onto one cache key (artifact, "", target)
