@@ -1,0 +1,188 @@
+--- /home/charlie/go/pkg/mod/github.com/gabstv/go-bsdiff@v1.0.5/pkg/bsdiff/bsdiff.go	2026-04-16 21:37:18.799718550 +0200
++++ pkg/bsdiff.go	2026-08-08 15:04:49.825791324 +0200
+@@ -23,7 +23,7 @@
+ // * POSSIBILITY OF SUCH DAMAGE.
+ 
+ // Package bsdiff is a binary diff program using suffix sorting.
+-package bsdiff
++package bsdiff32
+ 
+ import (
+ 	"bytes"
+@@ -81,7 +81,7 @@
+ 	bziprule := &bzip2.WriterConfig{
+ 		Level: bzip2.BestCompression,
+ 	}
+-	iii := make([]int, len(oldbin)+1)
++	iii := make([]int32, len(oldbin)+1)
+ 	qsufsort(iii, oldbin)
+ 
+ 	//var db
+@@ -293,7 +293,7 @@
+ 	return pf.Bytes(), nil
+ }
+ 
+-func search(iii []int, oldbin []byte, newbin []byte, st, en int, pos *int) int {
++func search(iii []int32, oldbin []byte, newbin []byte, st, en int, pos *int) int {
+ 	var x, y int
+ 	oldsize := len(oldbin)
+ 	newsize := len(newbin)
+@@ -303,16 +303,16 @@
+ 		y = matchlen(oldbin[iii[en]:], newbin)
+ 
+ 		if x > y {
+-			*pos = iii[st]
++			*pos = int(iii[st])
+ 			return x
+ 		}
+-		*pos = iii[en]
++		*pos = int(iii[en])
+ 		return y
+ 	}
+ 
+ 	x = st + (en-st)/2
+-	cmpln := util.Min(oldsize-iii[x], newsize)
+-	if bytes.Compare(oldbin[iii[x]:iii[x]+cmpln], newbin[:cmpln]) < 0 {
++	cmpln := util.Min(oldsize-int(iii[x]), newsize)
++	if bytes.Compare(oldbin[int(iii[x]):int(iii[x])+cmpln], newbin[:cmpln]) < 0 {
+ 		return search(iii, oldbin, newbin, x, en, pos)
+ 	}
+ 	return search(iii, oldbin, newbin, st, x, pos)
+@@ -367,9 +367,9 @@
+ 	}
+ }
+ 
+-func qsufsort(iii []int, buf []byte) {
+-	buckets := make([]int, 256)
+-	vvv := make([]int, len(iii))
++func qsufsort(iii []int32, buf []byte) {
++	buckets := make([]int32, 256)
++	vvv := make([]int32, len(iii))
+ 	var i, h, ln int
+ 	bufzise := len(buf)
+ 
+@@ -388,9 +388,9 @@
+ 
+ 	for i = 0; i < bufzise; i++ {
+ 		buckets[buf[i]]++
+-		iii[buckets[buf[i]]] = i
++		iii[buckets[buf[i]]] = int32(i)
+ 	}
+-	iii[0] = bufzise
++	iii[0] = int32(bufzise)
+ 
+ 	for i = 0; i < bufzise; i++ {
+ 		vvv[i] = buckets[buf[i]]
+@@ -404,53 +404,53 @@
+ 	}
+ 	iii[0] = -1
+ 
+-	for h = 1; iii[0] != -(bufzise + 1); h += h {
++	for h = 1; iii[0] != int32(-(bufzise + 1)); h += h {
+ 		ln = 0
+ 
+ 		i = 0
+ 		for i < bufzise+1 {
+ 			if iii[i] < 0 {
+-				ln -= iii[i]
+-				i -= iii[i]
++				ln -= int(iii[i])
++				i -= int(iii[i])
+ 			} else {
+ 				if ln != 0 {
+-					iii[i-ln] = -ln
++					iii[i-ln] = int32(-ln)
+ 				}
+-				ln = vvv[iii[i]] + 1 - i
++				ln = int(vvv[iii[i]]) + 1 - i
+ 				split(iii, vvv, i, ln, h)
+ 				i += ln
+ 				ln = 0
+ 			}
+ 		}
+ 		if ln != 0 {
+-			iii[i-ln] = -ln
++			iii[i-ln] = int32(-ln)
+ 		}
+ 	}
+ 
+ 	for i = 0; i < bufzise+1; i++ {
+-		iii[vvv[i]] = i
++		iii[vvv[i]] = int32(i)
+ 	}
+ }
+ 
+-func split(iii, vvv []int, start, ln, h int) {
++func split(iii, vvv []int32, start, ln, h int) {
+ 	var i, j, k, x int
+ 
+ 	if ln < 16 {
+ 		for k = start; k < start+ln; k += j {
+ 			j = 1
+-			x = vvv[iii[k]+h]
++			x = int(vvv[int(iii[k])+h])
+ 			for i = 1; k+i < start+ln; i++ {
+-				if vvv[iii[k+i]+h] < x {
+-					x = vvv[iii[k+i]+h]
++				if int(vvv[int(iii[k+i])+h]) < x {
++					x = int(vvv[int(iii[k+i])+h])
+ 					j = 0
+ 				}
+-				if vvv[iii[k+i]+h] == x {
++				if int(vvv[int(iii[k+i])+h]) == x {
+ 					iii[k+j], iii[k+i] = iii[k+i], iii[k+j]
+ 					j++
+ 				}
+ 			}
+ 			for i = 0; i < j; i++ {
+-				vvv[iii[k+i]] = k + j - 1
++				vvv[iii[k+i]] = int32(k + j - 1)
+ 			}
+ 			if j == 1 {
+ 				iii[k] = -1
+@@ -459,12 +459,12 @@
+ 		return
+ 	}
+ 
+-	x = vvv[iii[start+(ln/2)]+h]
++	x = int(vvv[int(iii[start+(ln/2)])+h])
+ 	var jj, kk int
+ 	for i = start; i < start+ln; i++ {
+-		if vvv[iii[i]+h] < x {
++		if int(vvv[int(iii[i])+h]) < x {
+ 			jj++
+-		} else if vvv[iii[i]+h] == x {
++		} else if int(vvv[int(iii[i])+h]) == x {
+ 			kk++
+ 		}
+ 	}
+@@ -475,9 +475,9 @@
+ 	j = 0
+ 	k = 0
+ 	for i < jj {
+-		if vvv[iii[i]+h] < x {
++		if int(vvv[int(iii[i])+h]) < x {
+ 			i++
+-		} else if vvv[iii[i]+h] == x {
++		} else if int(vvv[int(iii[i])+h]) == x {
+ 			iii[i], iii[jj+j] = iii[jj+j], iii[i]
+ 			j++
+ 		} else {
+@@ -486,7 +486,7 @@
+ 		}
+ 	}
+ 	for jj+j < kk {
+-		if vvv[iii[jj+j]+h] == x {
++		if int(vvv[int(iii[jj+j])+h]) == x {
+ 			j++
+ 		} else {
+ 			iii[jj+j], iii[kk+k] = iii[kk+k], iii[jj+j]
+@@ -498,7 +498,7 @@
+ 	}
+ 
+ 	for i = 0; i < kk-jj; i++ {
+-		vvv[iii[jj+i]] = kk - 1
++		vvv[iii[jj+i]] = int32(kk - 1)
+ 	}
+ 	if jj == kk-1 {
+ 		iii[jj] = -1
