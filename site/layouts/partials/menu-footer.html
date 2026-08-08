@@ -1,0 +1,18 @@
+{{- /*
+  Overrides the theme default to state which release this build documents.
+
+  The label comes from site.Params.release, which the publish workflow sets
+  from the git tag (HUGO_PARAMS_RELEASE). Without rendering it somewhere, a
+  reader has no way to tell whether the page describes the version they are
+  running — and the parameter would be dead config.
+*/ -}}
+{{- $release := site.Params.release | default "dev" -}}
+<p class="ota-release">
+  {{- if eq $release "dev" -}}
+    <span title="Unreleased build from the working tree">development build</span>
+  {{- else -}}
+    <a href="https://github.com/carlosprados/ota-updater/releases/tag/{{ $release }}"
+       title="Release this documentation was built from">{{ $release }}</a>
+  {{- end -}}
+</p>
+<p>Built with <a href="https://github.com/McShelby/hugo-theme-relearn" title="love"><i class="fas fa-heart"></i></a> by <a href="https://gohugo.io/">Hugo</a></p>
