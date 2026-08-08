@@ -257,7 +257,7 @@ func TestDownloader_CoAP_HappyPath(t *testing.T) {
 	addr := l.LocalAddr().String()
 
 	dir := t.TempDir()
-	d := NewDownloader(NewCoAPTransport(0), DownloaderConfig{
+	d := NewDownloader(NewCoAPTransport(CoAPOptions{}), DownloaderConfig{
 		StatePath: filepath.Join(dir, ".state"), MaxRetries: 1,
 		RetryBackoff: 10 * time.Millisecond,
 	}, silentLogger())

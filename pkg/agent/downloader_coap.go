@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"time"
 
 	"github.com/plgd-dev/go-coap/v3/message/codes"
-	"github.com/plgd-dev/go-coap/v3/udp"
 )
 
 // CoAPTransport fetches deltas over CoAP (UDP plain). go-coap handles
@@ -19,13 +17,15 @@ import (
 // and restarts the transfer from zero. Future work: replace Get with
 // a Block2-aware call that accepts a starting block number.
 type CoAPTransport struct {
-	// DialTimeout bounds udp.Dial. Zero uses go-coap's default.
-	DialTimeout time.Duration
+	// Options carries the NB-IoT tuning applied to every dial. The zero
+	// value means go-coap's defaults.
+	Options CoAPOptions
 }
 
-// NewCoAPTransport returns a DeltaTransport backed by go-coap's UDP client.
-func NewCoAPTransport(dialTimeout time.Duration) *CoAPTransport {
-	return &CoAPTransport{DialTimeout: dialTimeout}
+// NewCoAPTransport returns a DeltaTransport backed by go-coap's UDP client,
+// tuned by o.
+func NewCoAPTransport(o CoAPOptions) *CoAPTransport {
+	return &CoAPTransport{Options: o}
 }
 
 // Name implements DeltaTransport.
@@ -51,9 +51,9 @@ func (t *CoAPTransport) FetchRange(ctx context.Context, rawURL string, offset in
 		host = u.Hostname() + ":5683"
 	}
 
-	co, err := udp.Dial(host)
+	co, err := dialCoAP(ctx, host, t.Options)
 	if err != nil {
-		return nil, 0, fmt.Errorf("coap dial: %w", err)
+		return nil, 0, err
 	}
 	defer co.Close()
 
