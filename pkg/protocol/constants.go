@@ -9,6 +9,7 @@ const ProtocolVersion = 1
 const (
 	PathHeartbeat = "/heartbeat"
 	PathDelta     = "/delta"
+	PathBinary    = "/binary"
 	PathReport    = "/report"
 	PathHealth    = "/health"
 )
@@ -26,4 +27,15 @@ const (
 // hashes. Used by both HTTP and CoAP transports.
 func DeltaPath(fromHash, toHash string) string {
 	return PathDelta + "/" + fromHash + "/" + toHash
+}
+
+// BinaryPath returns the canonical resource path for a whole compressed
+// binary, addressed by the SHA-256 of its *uncompressed* content. Used for
+// the full-download fallback when no delta can be built.
+//
+// Content-addressing by the uncompressed hash (rather than the compressed
+// one) means the path is stable regardless of compression settings and
+// matches the TargetHash the agent already knows from the signed manifest.
+func BinaryPath(targetHash string) string {
+	return PathBinary + "/" + targetHash
 }

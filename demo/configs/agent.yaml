@@ -16,6 +16,7 @@ server:
 
 device:
   id: "demo-device-01"
+  artifact: "demo-app/linux/amd64"     # must match an artifact in server.yaml
   slots_dir: "/tmp/ota-demo/agent/slots"
   active_symlink: "/tmp/ota-demo/agent/current"
   disk_space_min_free_pct: 0
