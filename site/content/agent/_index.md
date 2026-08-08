@@ -146,6 +146,46 @@ touch /opt/agent/slots/.update_now
 updater.TriggerUpdate()
 ```
 
+## CoAP tuning
+
+Every key under `server.coap` is applied to each connection the agent opens,
+for both the heartbeat/report leg and the delta download leg. They share one
+`CoAPOptions` value precisely so the two legs of a single update cycle cannot
+end up tuned differently on the same link.
+
+```yaml
+server:
+  coap:
+    block_size: 512          # RFC 7959 Block2 size: power of 2, 16..1024
+    ack_timeout: "60s"       # window before retransmitting a confirmable message
+    max_retransmits: 4       # RFC 7252 MAX_RETRANSMIT
+    keepalive: "2m"          # 0 disables
+    dial_timeout: "30s"      # socket setup; over UDP this is name resolution
+```
+
+Leaving a key at 0 keeps go-coap's default, and those defaults assume an
+ordinary network: a 3 s dial, a 2 s ACK window, 4 retransmits. On a link with
+multi-second round trips they give up long before the peer had a chance to
+answer, which is the whole reason these knobs exist.
+
+Two notes worth internalising:
+
+- **`dial_timeout` is not a connection timeout.** UDP has no handshake, so
+  what it actually bounds is name resolution. It matters when DNS is slow or
+  unreachable, which on NB-IoT is common.
+- **Smaller `block_size` survives loss better and costs round trips.** 512 is
+  a reasonable default: small enough to avoid IP fragmentation on most paths,
+  large enough that a 100 KiB transfer is not 6400 exchanges. An unsupported
+  value falls back to the library default rather than failing the transfer —
+  a mistyped config should not brick updates.
+
+{{% notice style="note" title="Fixed in v0.4.0" %}}
+Before v0.4.0 every one of these keys was parsed and then discarded: all three
+CoAP dials were made with no options at all, and `ack_timeout` was
+additionally passed into a dial-timeout slot that itself went unread. If you
+configured this block against an earlier release, it had no effect.
+{{% /notice %}}
+
 ## Self-restart
 
 The default `RestartStrategy` is `syscall.Exec`, which **replaces the process
@@ -208,6 +248,33 @@ updater, _ := agent.NewUpdater(agent.UpdaterDeps{
 if err := updater.BootPhase(ctx); err != nil { /* ... */ }
 go updater.Run(ctx)
 ```
+
+### Driving the slots directly
+
+`SlotManager` is public surface, and `Swap` and `Rollback` are **toggles**:
+each activates whichever slot is currently inactive, asserting nothing about
+what that slot contains. Called twice, `Rollback` flips forward again — into
+the binary that just failed.
+
+The `Updater` is safe because it verifies the reconstructed binary before
+swapping and pairs the call with the `.pending_update` marker, so every crash
+point is recoverable. A consumer driving `SlotManager` on its own schedule
+gets neither guarantee, so prefer the checked variants:
+
+```go
+// Refuses unless the inactive slot really holds the bytes you expect.
+if err := slots.SwapTo(targetHash); err != nil { /* ... */ }
+if err := slots.RollbackTo(previousHash); err != nil { /* ... */ }
+```
+
+These turn the toggle into an assertion about where the device ends up: a
+double call, or a slot holding something unexpected, fails loudly instead of
+silently activating the wrong binary.
+
+`NewSlotManager` also verifies the provisioned layout — both slot files and
+the active symlink — and fails at construction. A provisioning fault is then
+a clear startup error rather than a confusing failure on the first update
+cycle, potentially hours later on a device in the field.
 
 {{% notice style="note" title="One Updater per artifact" %}}
 An `Updater` follows exactly one artifact. An embedder managing several
