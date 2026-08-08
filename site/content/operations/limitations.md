@@ -19,14 +19,26 @@ big, the full-download path works — you just lose the delta advantage.
 binaries. `icedream/go-bsdiff`, `xdelta3` and **`zstd --patch-from`** are the
 tracked alternatives.
 
-`zstd --patch-from` is worth a benchmark before committing to bsdiff forever.
-One reported measurement on 34 MiB Go binaries: a 2.07 MiB patch against
-bsdiff's 1.03 MiB — twice the downlink — but applied in 0.04 s with 70 MiB RSS,
-**streaming**, versus bsdiff's in-memory round trip. On a constrained device
-the smaller peak may matter more than the smaller patch, and it removes the
-20× ceiling on the server too. Those numbers are second-hand and have not been
-reproduced here; `benchmark/` in the repository is the place to settle it
-against your own binaries.
+`zstd --patch-from` has now been measured **in this repository**, against two
+consecutive real builds of its own server binary, using a pure-Go
+implementation (`klauspost/compress`, already a dependency — no CGO):
+
+| | Patch | Generate | Peak RSS |
+|---|---:|---:|---:|
+| bsdiff + zstd | 250,167 B | 3.18 s | 296 MiB (21.7×) |
+| zstd dictionary | 910,609 B | 0.27 s | 133 MiB (9.3×) |
+
+A third of the memory for **3.6× the patch**. It was rejected as a replacement
+because generation is O(versions) and amortises across the fleet, while
+transfer is O(devices) and multiplies: 660 KB more per device is over four
+extra minutes of radio at 20 kbps. It remains the strongest candidate as an
+opt-in mode for artifacts too large to diff.
+
+An `int32` suffix array was also measured, reaching 15.0× instead of 21.7× and
+running 28% faster, verified by round-trip against the stock patcher.
+
+Full methodology, numbers and the saved patch:
+[`docs/delta-memory.md`](https://github.com/carlosprados/ota-updater/blob/main/docs/delta-memory.md).
 
 ## Deferred by design
 
