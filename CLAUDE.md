@@ -154,6 +154,21 @@ Analizadas y conscientemente pospuestas tras PR-G (2026-04-19). Ninguna es bloqu
 
 - **CoAP Block2 resume** del downloader del agente. Actualmente si una descarga CoAP se corta a mitad, el agente descarta el `.partial` y reinicia desde byte 0. HTTP con Range funciona normal. **Razón de posponer**: HTTP es el transport preferido para deltas grandes donde el resume es crítico; CoAP es aceptable para deltas pequeños. Mitigación operacional: preferir `transport: http` cuando el target > 100 KiB. Implementación futura: jugar con opciones Block2 de `go-coap` para indicar start block. Mediano-grande, probablemente PR propio. Documentado en README §"Known limitations".
 
+## CI
+
+`.github/workflows/ci.yml` — en push a `main`, en cada PR y a mano. Tres jobs:
+
+- **test**: `gofmt -l` (excluyendo `site/`), `go mod tidy` sin diff, `go vet`,
+  `go test ./... -race`, tests de integración con tag, y build estático de ambos
+  binarios con `CGO_ENABLED=0`.
+- **cross-build**: matriz `linux/{arm64,arm(v7),amd64}`. El objetivo del proyecto
+  son dispositivos ARM constreñidos y el agente usa `syscall.Exec` más ficheros
+  con build tags (sondas de disco), así que romper la compilación cruzada es
+  fácil y caro de descubrir tarde.
+- **docs**: construye `site/` y verifica que los mermaid llegan al HTML. Va
+  aparte porque es otro módulo Go; así un PR que rompe la documentación se ve en
+  el PR, no al cortar el tag.
+
 ## Sitio de documentación
 
 - `site/` — Hugo + tema **Relearn**, publicado en GitHub Pages
@@ -204,11 +219,9 @@ task docs-check         # build + verifica que los mermaid llegaron al HTML
 - Logging: `slog` con campos estructurados. Campos obligatorios en agente: `device_id`, `version_hash`, `operation`. En servidor: `device_id`, `op`.
 - Errores: siempre `fmt.Errorf("operación: %w", err)`. Sin `errors.New` en rutas de error con contexto útil.
 - Rama de trabajo actual: `ota/multi-artifact-server`. Seguir convención `ota/<feature>`.
-- **El repo NO está `gofmt`-limpio** de antes: 9 ficheros con drift previo
-  (`pkg/agent/{config,slots,updater,client_test,updater_test}.go`,
-  `pkg/protocol/messages.go`, `cmd/edge-agent/main.go`, etc.). Deuda conocida; no
-  se arregló en la rama multi-artefacto para no inflar el diff. Ficheros nuevos y
-  reescritos sí van formateados.
+- **`gofmt` limpio y verificado en CI** desde 2026-08-08. El drift previo (8
+  ficheros) se saneó al introducir `.github/workflows/ci.yml`, porque un CI que
+  arranca en rojo no lo mira nadie. El CI también exige `go mod tidy` limpio.
 
 ## Estado
 

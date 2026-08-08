@@ -8,6 +8,7 @@ require (
 	github.com/gabstv/go-bsdiff v1.0.5
 	github.com/klauspost/compress v1.18.5
 	github.com/plgd-dev/go-coap/v3 v3.5.1
+	github.com/prometheus/client_golang v1.23.2
 	golang.org/x/mod v0.20.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/time v0.15.0
@@ -19,11 +20,11 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dsnet/compress v0.0.0-20171208185109-cc9eb1d7ad76 // indirect
 	github.com/dsnet/golib/memfile v1.0.0 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pion/dtls/v3 v3.1.2 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
