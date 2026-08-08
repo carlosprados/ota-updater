@@ -30,6 +30,17 @@ import (
 Licensed under [Apache 2.0](LICENSE). See
 [Embedding as a library](#embedding-as-a-library) for a self-contained example.
 
+## Documentation
+
+**<https://carlosprados.github.io/ota-updater/>** — the full documentation
+site, with architecture, sequence, state and flow diagrams covering how the
+system works and what it buys you. Republished automatically on every version
+tag.
+
+This README stays the reference for operators running the binaries; the site
+is the better starting point if you are evaluating the library or need to see
+the moving parts.
+
 ## Components
 
 | What | Where | Role |

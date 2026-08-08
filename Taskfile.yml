@@ -3,6 +3,7 @@ version: '3'
 vars:
   BIN_DIR: '{{.ROOT_DIR}}/bin'
   KEYS_DIR: '{{.ROOT_DIR}}/keys'
+  SITE_DIR: '{{.ROOT_DIR}}/site'
   LDFLAGS: '-s -w'
   # AGENT_VERSION: semver injected into cmd/edge-agent at build time.
   # Falls back to `0.0.0-dev` when `git describe` can't find a tag.
@@ -73,8 +74,32 @@ tasks:
       - task: build-server
       - task: build-agent
 
+  docs-serve:
+    desc: Serve the documentation site locally with live reload (hugo extended required)
+    dir: '{{.SITE_DIR}}'
+    cmds:
+      - hugo server --buildDrafts --disableFastRender
+
+  docs-build:
+    desc: Build the documentation site into site/public
+    dir: '{{.SITE_DIR}}'
+    cmds:
+      - hugo --gc --minify --printPathWarnings
+
+  docs-check:
+    desc: Build the docs and assert the mermaid diagrams survived into the HTML
+    dir: '{{.SITE_DIR}}'
+    cmds:
+      - hugo --gc --minify
+      - test -f public/index.html
+      # A theme upgrade that changes the mermaid render hook would otherwise
+      # ship a site full of raw code blocks with a green build.
+      - grep -rq 'class="mermaid' public/ || (echo "no mermaid diagrams in output" && exit 1)
+      - echo "docs OK - $(find public -name index.html | wc -l) pages"
+
   clean:
-    desc: Remove build artifacts and cached deltas
+    desc: Remove build artifacts, cached deltas and the generated site
     cmds:
       - rm -rf {{.BIN_DIR}}
       - rm -rf {{.ROOT_DIR}}/store/deltas
+      - rm -rf {{.SITE_DIR}}/public {{.SITE_DIR}}/resources

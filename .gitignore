@@ -7,3 +7,9 @@
 .DS_Store
 .idea/
 .vscode/
+
+# Hugo docs site (site/) build output. The theme is a Hugo Module, so
+# nothing vendored needs committing — only go.mod/go.sum, which pin it.
+/site/public/
+/site/resources/
+/site/.hugo_build.lock

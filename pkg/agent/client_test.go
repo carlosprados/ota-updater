@@ -182,10 +182,10 @@ func TestCoAPClient_Names(t *testing.T) {
 func TestCoAPClient_DeltaURL(t *testing.T) {
 	c := NewCoAPClient("coap://server:5683")
 	cases := map[string]string{
-		"/delta/a/b":            "coap://server:5683/delta/a/b",
-		"delta/a/b":             "coap://server:5683/delta/a/b",
-		"coap://other/delta/x":  "coap://other/delta/x",
-		"":                      "",
+		"/delta/a/b":           "coap://server:5683/delta/a/b",
+		"delta/a/b":            "coap://server:5683/delta/a/b",
+		"coap://other/delta/x": "coap://other/delta/x",
+		"":                     "",
 	}
 	for in, want := range cases {
 		if got := c.DeltaURL(in); got != want {

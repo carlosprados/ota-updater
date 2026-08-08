@@ -1,0 +1,86 @@
+baseURL = 'https://carlosprados.github.io/ota-updater/'
+# Hugo 0.158 renamed languageCode -> locale.
+locale = 'en-US'
+defaultContentLanguage = 'en'
+title = 'OTA Updater'
+
+# Relearn is pulled as a Hugo Module, pinned to an exact commit in go.mod.
+# The upstream repo tags releases as "7.x.x" without the leading "v", so the
+# Go module proxy sees no semver tags and resolves to a pseudo-version. That
+# is fine — arguably better: the build is reproducible down to the commit.
+theme = ['github.com/McShelby/hugo-theme-relearn']
+
+# Generated into ./public by the release workflow.
+publishDir = 'public'
+
+# Relearn renders section landing pages from _index.md; without this, Hugo
+# emits "/section/index.html" links that break on GitHub Pages' trailing-slash
+# handling for some paths.
+disablePathToLower = false
+enableGitInfo = false
+
+[module]
+  [[module.imports]]
+    path = 'github.com/McShelby/hugo-theme-relearn'
+
+[markup]
+  [markup.goldmark.renderer]
+    # Needed for the few inline <br> and <sup> tags used in wide tables.
+    unsafe = true
+  [markup.highlight]
+    noClasses = false
+    style = 'github'
+    lineNumbersInTable = true
+  [markup.tableOfContents]
+    startLevel = 2
+    endLevel = 4
+
+[params]
+  # Light + dark, following the reader's OS preference. Relearn switches
+  # mermaid's own palette along with the page.
+  themeVariant = [
+    { identifier = 'relearn-light', name = 'Light', auto = [] },
+    { identifier = 'relearn-dark', name = 'Dark' },
+  ]
+
+  # Diagrams are the point of this site: make them zoomable, since the
+  # architecture and retention flowcharts do not fit a phone screen.
+  mermaidZoom = true
+
+  disableLandingPageButton = true
+  disableBreadcrumb = false
+  disableNextPrev = false
+  disableToc = false
+  collapsibleMenu = true
+  alwaysopen = false
+  editURL = 'https://github.com/carlosprados/ota-updater/edit/main/site/content/'
+
+  # Injected by the release workflow from the git tag, so every published
+  # build states which release it documents instead of silently drifting.
+  release = 'dev'
+
+  [params.mermaid]
+    # Force the same look in both themes for line weights; colors still
+    # follow the active variant.
+    force = true
+
+# Relearn 7 builds its own search index; declaring a SEARCH output format
+# here is unsupported and warns at build time.
+[outputs]
+  home = ['HTML', 'RSS']
+
+[[menu.shortcuts]]
+  name = "<i class='fab fa-fw fa-github'></i> GitHub repo"
+  identifier = 'ghrepo'
+  url = 'https://github.com/carlosprados/ota-updater'
+  weight = 10
+
+[[menu.shortcuts]]
+  name = "<i class='fas fa-fw fa-scale-balanced'></i> Apache-2.0"
+  url = 'https://github.com/carlosprados/ota-updater/blob/main/LICENSE'
+  weight = 20
+
+[[menu.shortcuts]]
+  name = "<i class='fas fa-fw fa-key'></i> Signature scheme"
+  url = 'https://github.com/carlosprados/ota-updater/blob/main/docs/signing.md'
+  weight = 30
