@@ -192,6 +192,16 @@ Analizadas y conscientemente pospuestas tras PR-G (2026-04-19). Ninguna es bloqu
 - Publicación: `.github/workflows/docs.yml`, disparado al **pushear un tag `v*`**
   (+ `workflow_dispatch`). El baseURL sale de la API de Pages, no de `hugo.toml`,
   para que un fork o un rename no rompan los enlaces.
+- **Trampa operativa (mordió el 2026-08-08)**: el entorno `github-pages` se crea
+  con una *deployment branch policy* que sólo permite `main`. Un workflow que
+  despliega desde un **tag** falla en el job `deploy` sin ejecutar ningún paso y
+  sin log útil. Arreglado añadiendo una política de tipo `tag` con patrón `v*`:
+  `gh api -X POST repos/<o>/<r>/environments/github-pages/deployment-branch-policies -f name='v*' -f type=tag`.
+  Si se clona el montaje en otro repo, hay que repetirlo.
+- El footer del sitio muestra la release desde `site.Params.release`
+  (`layouts/partials/menu-footer.html`, override del tema). El workflow lo
+  inyecta con `HUGO_PARAMS_RELEASE` desde el tag; sin variable pone
+  "development build".
 
 ## Comandos habituales
 
