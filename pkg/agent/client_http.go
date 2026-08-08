@@ -11,7 +11,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/amplia/ota-updater/pkg/protocol"
+	"github.com/carlosprados/ota-updater/pkg/protocol"
 )
 
 // HTTPClient implements ProtocolClient over HTTP+JSON. It is paired with

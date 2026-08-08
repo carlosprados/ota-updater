@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amplia/ota-updater/pkg/crypto"
-	"github.com/amplia/ota-updater/pkg/delta"
-	"github.com/amplia/ota-updater/pkg/protocol"
+	"github.com/carlosprados/ota-updater/pkg/crypto"
+	"github.com/carlosprados/ota-updater/pkg/delta"
+	"github.com/carlosprados/ota-updater/pkg/protocol"
 )
 
 // fakeClient is a programmable ProtocolClient for the updater tests.

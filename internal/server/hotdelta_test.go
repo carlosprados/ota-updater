@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amplia/ota-updater/pkg/delta"
+	"github.com/carlosprados/ota-updater/pkg/delta"
 )
 
 // hotDeltaFixture sets up a Store with a pre-generated delta already on

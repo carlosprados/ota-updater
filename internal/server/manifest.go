@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/amplia/ota-updater/pkg/crypto"
-	"github.com/amplia/ota-updater/pkg/protocol"
+	"github.com/carlosprados/ota-updater/pkg/crypto"
+	"github.com/carlosprados/ota-updater/pkg/protocol"
 )
 
 // DefaultManifestCacheSize is the default entry count for the signed-manifest

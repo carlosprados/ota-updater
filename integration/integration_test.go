@@ -26,9 +26,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/amplia/ota-updater/pkg/agent"
-	"github.com/amplia/ota-updater/pkg/protocol"
-	"github.com/amplia/ota-updater/internal/server"
+	"github.com/carlosprados/ota-updater/pkg/agent"
+	"github.com/carlosprados/ota-updater/pkg/protocol"
+	"github.com/carlosprados/ota-updater/internal/server"
 )
 
 // recordingRestart captures Restart invocations without actually exec'ing.
