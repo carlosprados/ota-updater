@@ -255,9 +255,59 @@ manifest:
 | Signed manifests | ≤ `cache_size` × ~500 B | Entry-count LRU keyed by `(artifact, from, to)`. |
 | bsdiff transient | ~20× the larger input | Bounded by `delta_concurrency`. |
 
-{{% notice style="warning" title="The hard ceiling is bsdiff" %}}
-`bsdiff` peaks at roughly **20× the binary size** in RAM (suffix sort of the
-full input). Targets above ~100 MiB are not practical. `librsync` was
-benchmarked as a replacement and rejected: on real Go binaries it produced
-deltas around 100× larger, which defeats the entire purpose.
+### The bsdiff ceiling, and the cap that contains it
+
+`bsdiff` peaks at roughly **21× the larger input**, and it scales linearly.
+Measured on two consecutive builds of this project's own server binary:
+
+| Input | Peak RSS | Ratio |
+|---|---:|---:|
+| 13.6 MB | 296 MiB | 21.7× |
+| 27.3 MB | 557 MiB | 20.4× |
+
+Most of that is the suffix array: two index tables, one machine word per input
+byte. They are **computed, not file-backed**, so the kernel cannot reclaim
+them under pressure the way it can with the page cache. Extrapolating: 50 MB
+is ~1 GiB per generation, 100 MB is ~2 GiB — each multiplied by
+`delta_concurrency`.
+
+Left alone, that turns artifact growth into an OOM. `delta_max_source_mb`
+converts it into a policy instead:
+
+```yaml
+store:
+  delta_max_source_mb: 32   # 0 disables the cap
+```
+
+When either binary of a pair exceeds it, the server **does not diff**. The
+manifester serves the whole compressed target instead, so the device still
+updates — it spends downlink rather than the server spending RAM. The
+decision is taken in the manifester rather than left to the store, because a
+store that silently refused would leave the device polling `RetryAfter`
+forever, which is the stranding failure the
+[full-download fallback]({{% relref "/protocol/full-download" %}}) exists to
+remove.
+
+Three properties worth knowing:
+
+- **A delta already on disk is always served**, whatever the cap says. The
+  memory was spent when it was generated. Lowering the cap never invalidates
+  work already done.
+- **The cap is enforced in the store too**, not just the manifester, because
+  `pkg/server` is importable and a direct consumer must not be able to
+  allocate the process to death. `Store.EnsureDelta` returns
+  `ErrDeltaTooLarge`.
+- **It is never silent.** The server logs a WARN naming the offending binary
+  and size, and `updater_deltas_served_total{mode="full"}` rises.
+
+{{% notice style="note" title="What the cap does not do" %}}
+It bounds the absolute cost, not the multiplier. 21× is inherent to bsdiff —
+it needs the whole suffix array resident. If your artifacts are heading past
+~50 MB, the cap keeps the server alive but every device pays full-download
+downlink. That is the point at which a different algorithm, rather than a
+bigger limit, is the answer.
+
+`librsync` was benchmarked as a replacement and rejected: on real Go binaries
+it produced deltas around 100× larger. `zstd --patch-from` is the live
+candidate — see [Known limitations]({{% relref "/operations/limitations" %}}).
 {{% /notice %}}
