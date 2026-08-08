@@ -41,11 +41,11 @@ type Config struct {
 
 // ServerConfig describes how to talk to the update-server.
 type ServerConfig struct {
-	HTTPURL   string            `yaml:"http_url"`
-	CoAPURL   string            `yaml:"coap_url"`
-	Transport Transport         `yaml:"transport"`
-	Fallback  bool              `yaml:"fallback"` // try the other transport once per cycle on failure
-	CoAP      CoAPClientConfig  `yaml:"coap"`
+	HTTPURL   string           `yaml:"http_url"`
+	CoAPURL   string           `yaml:"coap_url"`
+	Transport Transport        `yaml:"transport"`
+	Fallback  bool             `yaml:"fallback"` // try the other transport once per cycle on failure
+	CoAP      CoAPClientConfig `yaml:"coap"`
 }
 
 // CoAPClientConfig tunes the CoAP client for NB-IoT links. Defaults are
@@ -77,7 +77,7 @@ type DeviceConfig struct {
 // UpdateConfig controls the update loop cadence, download behavior and the
 // semver-based auto-update policy.
 type UpdateConfig struct {
-	CheckInterval   time.Duration `yaml:"check_interval"`
+	CheckInterval time.Duration `yaml:"check_interval"`
 	// Jitter spreads the CheckInterval sleep by ±(Jitter*CheckInterval)
 	// each cycle so a fleet deployed at the same moment doesn't keep
 	// hammering the server in lock-step. 0.0 disables the jitter entirely

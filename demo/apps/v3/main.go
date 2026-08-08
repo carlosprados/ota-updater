@@ -127,12 +127,12 @@ func handleHello(w http.ResponseWriter, _ *http.Request) {
 func handleStatus(w http.ResponseWriter, _ *http.Request) {
 	host, _ := os.Hostname()
 	payload := map[string]any{
-		"version":      version,
-		"pid":          os.Getpid(),
-		"hostname":     host,
-		"uptime_secs":  int(time.Since(started).Seconds()),
-		"go":           runtime.Version(),
-		"introduced":   "2.0.0",
+		"version":     version,
+		"pid":         os.Getpid(),
+		"hostname":    host,
+		"uptime_secs": int(time.Since(started).Seconds()),
+		"go":          runtime.Version(),
+		"introduced":  "2.0.0",
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(payload)
@@ -153,7 +153,7 @@ func buildUpdater(cfg *agent.Config, logger *slog.Logger) *agent.Updater {
 	}
 	httpClient := &http.Client{
 		Transport: &http.Transport{
-			DialContext: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 			MaxIdleConns:        2,
 			IdleConnTimeout:     60 * time.Second,
 			TLSHandshakeTimeout: 15 * time.Second,

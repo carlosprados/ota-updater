@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR supersedes the previous run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify formatting
+        run: |
+          set -euo pipefail
+          # Report every offender at once instead of stopping at the first.
+          unformatted="$(gofmt -l . | grep -v '^site/' || true)"
+          if [ -n "${unformatted}" ]; then
+            echo "::error::gofmt would rewrite these files:"
+            echo "${unformatted}"
+            gofmt -d $(echo "${unformatted}")
+            exit 1
+          fi
+
+      - name: Verify go.mod is tidy
+        run: |
+          set -euo pipefail
+          go mod tidy
+          if ! git diff --quiet go.mod go.sum; then
+            echo "::error::go.mod/go.sum are not tidy; run 'go mod tidy'"
+            git diff go.mod go.sum
+            exit 1
+          fi
+
+      - run: go vet ./...
+
+      # Race detector on by default: this codebase is concurrency-heavy
+      # (singleflight, LRUs under RWMutex, async bsdiff goroutines) and a data
+      # race there corrupts an update payload rather than just crashing a test.
+      - name: Unit tests
+        run: go test ./... -race -count=1
+
+      - name: Integration tests
+        run: go test -tags integration ./integration/... -race -count=1
+
+      # Both binaries must link statically: they ship to devices that may not
+      # have a matching libc.
+      - name: Build static binaries
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o /tmp/update-server ./cmd/update-server
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o /tmp/edge-agent ./cmd/edge-agent
+          file /tmp/update-server /tmp/edge-agent
+
+  # Cross-compilation is cheap to check and expensive to discover broken: the
+  # whole point of the project is shipping to constrained ARM devices, and the
+  # agent uses syscall.Exec plus build-tagged files for disk-space probes.
+  cross-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { goos: linux, goarch: arm64 }
+          - { goos: linux, goarch: arm, goarm: '7' }
+          - { goos: linux, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build for ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
+        env:
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+          GOARM: ${{ matrix.target.goarm }}
+          CGO_ENABLED: '0'
+        run: go build ./...
+
+  # The docs site is a separate Go module with its own toolchain needs, so it
+  # gets its own job rather than complicating the main one. This catches
+  # broken content or a theme change on the PR that introduces it, instead of
+  # at tag time when the release is already cut.
+  docs:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    env:
+      HUGO_VERSION: '0.164.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: site/go.mod
+          cache-dependency-path: site/go.sum
+      - name: Install Hugo (extended)
+        run: |
+          set -euo pipefail
+          curl -sSLf -o /tmp/hugo.deb \
+            "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.deb"
+          sudo dpkg -i /tmp/hugo.deb
+      - name: Build site
+        run: hugo --gc --minify --printPathWarnings
+      - name: Assert diagrams survived into the HTML
+        run: |
+          set -euo pipefail
+          test -f public/index.html
+          grep -rq 'class="mermaid' public/ || {
+            echo "::error::no mermaid diagrams in the generated site"
+            exit 1
+          }

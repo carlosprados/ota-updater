@@ -233,16 +233,16 @@ func NewUpdater(deps UpdaterDeps) (*Updater, error) {
 	checkAgentDiskSpace(cfg.StateDir, cfg.DiskSpaceMinFreePct, cfg.DiskSpaceMinFreeMB, logger)
 
 	return &Updater{
-		cfg:           cfg,
-		primary:       deps.Primary,
-		fallback:      deps.Fallback,
-		slots:         deps.Slots,
-		publicKey:     deps.PublicKey,
-		watchdog:      deps.Watchdog,
-		restart:       deps.Restart,
-		logger:        logger,
-		hwInfo:        hw,
-		rand:          rand.New(rand.NewSource(time.Now().UnixNano())),
+		cfg:                 cfg,
+		primary:             deps.Primary,
+		fallback:            deps.Fallback,
+		slots:               deps.Slots,
+		publicKey:           deps.PublicKey,
+		watchdog:            deps.Watchdog,
+		restart:             deps.Restart,
+		logger:              logger,
+		hwInfo:              hw,
+		rand:                rand.New(rand.NewSource(time.Now().UnixNano())),
 		pendingPath:         filepath.Join(cfg.StateDir, pendingUpdateFile),
 		deltaStaging:        filepath.Join(cfg.StateDir, stagingDeltaFile),
 		downloadState:       filepath.Join(cfg.StateDir, downloadStateFile),
@@ -843,7 +843,7 @@ func (u *Updater) clearPending() {
 // Kept human-readable (Unix seconds) so an operator can `cat` the file
 // and see when the cooldown expires.
 type restartCooldownMarker struct {
-	WakeAtUnix int64 `json:"wake_at_unix"`
+	WakeAtUnix int64  `json:"wake_at_unix"`
 	Reason     string `json:"reason,omitempty"`
 }
 

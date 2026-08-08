@@ -25,7 +25,9 @@ import (
 )
 
 // version is the semver of this binary, set at build time with
-//   -ldflags="-X main.version=<tag>"
+//
+//	-ldflags="-X main.version=<tag>"
+//
 // Taskfile.yml injects `git describe --tags --always --dirty` by default.
 // Empty string at runtime disables the agent's semver gating (all updates
 // are allowed regardless of max_bump).
@@ -133,16 +135,16 @@ func run(cfgPath string) error {
 
 	updater, err := agent.NewUpdater(agent.UpdaterDeps{
 		Config: agent.UpdaterConfig{
-			DeviceID:             cfg.Device.ID,
-			Artifact:             cfg.Device.Artifact,
-			Version:              version,
-			CheckInterval:        cfg.Update.CheckInterval,
-			Jitter:               jitter,
-			MaxRetries:           cfg.Update.MaxRetries,
-			RetryBackoff:         cfg.Update.RetryBackoff,
-			StateDir:             cfg.Device.SlotsDir,
-			AutoUpdate:           autoUpdate,
-			MaxBump:              maxBump,
+			DeviceID:               cfg.Device.ID,
+			Artifact:               cfg.Device.Artifact,
+			Version:                version,
+			CheckInterval:          cfg.Update.CheckInterval,
+			Jitter:                 jitter,
+			MaxRetries:             cfg.Update.MaxRetries,
+			RetryBackoff:           cfg.Update.RetryBackoff,
+			StateDir:               cfg.Device.SlotsDir,
+			AutoUpdate:             autoUpdate,
+			MaxBump:                maxBump,
 			UnknownVersionPolicy:   unknownPolicy,
 			DiskSpaceMinFreePct:    cfg.Device.DiskSpaceMinFreePct,
 			DiskSpaceMinFreeMB:     cfg.Device.DiskSpaceMinFreeMB,

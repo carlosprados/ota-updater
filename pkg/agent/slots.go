@@ -163,7 +163,6 @@ func (s *SlotManager) resolveActive() (path, name string, err error) {
 	return dst, base, nil
 }
 
-
 // hashFile returns the SHA-256 hex of the entire file at path.
 func hashFile(path string) (string, error) {
 	f, err := os.Open(path)
