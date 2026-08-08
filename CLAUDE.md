@@ -154,6 +154,30 @@ Analizadas y conscientemente pospuestas tras PR-G (2026-04-19). Ninguna es bloqu
 
 - **CoAP Block2 resume** del downloader del agente. Actualmente si una descarga CoAP se corta a mitad, el agente descarta el `.partial` y reinicia desde byte 0. HTTP con Range funciona normal. **Razón de posponer**: HTTP es el transport preferido para deltas grandes donde el resume es crítico; CoAP es aceptable para deltas pequeños. Mitigación operacional: preferir `transport: http` cuando el target > 100 KiB. Implementación futura: jugar con opciones Block2 de `go-coap` para indicar start block. Mediano-grande, probablemente PR propio. Documentado en README §"Known limitations".
 
+## Sitio de documentación
+
+- `site/` — Hugo + tema **Relearn**, publicado en GitHub Pages
+  (`https://carlosprados.github.io/ota-updater/`). Contenido en **inglés**.
+- El tema entra como **Hugo Module** (`site/go.mod`), fijado a un commit exacto:
+  upstream etiqueta `7.x.x` sin prefijo `v`, así que el proxy de Go no lo ve como
+  semver y resuelve a pseudo-versión. Efecto práctico: build reproducible.
+- `site/` es un **módulo Go anidado**, por lo que queda fuera de `go build ./...`
+  y `go test ./...` de la raíz. No interfiere.
+- Los diagramas son bloques ```` ```mermaid ````; Relearn los renderiza con
+  wrapper *zoomable* y paleta que sigue el tema claro/oscuro. Tipos usados:
+  flowchart (arquitectura, retención, ciclo de update), sequenceDiagram (ciclo
+  completo, fallback de transporte, workflow del operador), stateDiagram-v2
+  (slots A/B, watchdog/boot, ciclo de vida del artefacto, orden de verificación)
+  y classDiagram (tipos del protocolo, Store vs Registry).
+- **No se validan en build** (mermaid renderiza en cliente). `task docs-check` y
+  el workflow comprueban que `class="mermaid"` aparece en el HTML — eso caza el
+  fallo real: que una subida de tema cambie el render hook y se publique un sitio
+  lleno de bloques de código en crudo. Para validar la *sintaxis*, mermaid CLI
+  (`mmdc -p` con `--no-sandbox`; los 23 diagramas se verificaron así).
+- Publicación: `.github/workflows/docs.yml`, disparado al **pushear un tag `v*`**
+  (+ `workflow_dispatch`). El baseURL sale de la API de Pages, no de `hugo.toml`,
+  para que un fork o un rename no rompan los enlaces.
+
 ## Comandos habituales
 
 Build tool: **Taskfile** (`Taskfile.yml`), no Makefile. Instalar `task` (taskfile.dev) una vez.
@@ -168,7 +192,10 @@ task test               # go test ./... -race -count=1
 task vet                # go vet ./...
 task check              # vet + build (rápido, sin tests)
 task ci                 # vet + test + build
-task clean              # rm bin/ y store/deltas/
+task clean              # rm bin/, store/deltas/ y site/{public,resources}
+task docs-serve         # sitio en local con live reload (:1313)
+task docs-build         # genera site/public
+task docs-check         # build + verifica que los mermaid llegaron al HTML
 ```
 
 ## Convenciones locales
