@@ -1,0 +1,122 @@
+name: Publish docs
+
+# The documentation site is a release artifact: it is rebuilt and deployed
+# whenever a version tag is pushed, so what is published always corresponds to
+# a real release rather than to whatever happened to be on main.
+#
+# workflow_dispatch is kept for two cases: re-deploying after a Pages settings
+# change, and publishing a docs-only fix without minting a new version tag.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release label to stamp on the site (defaults to the latest tag)'
+        required: false
+        type: string
+
+# Least privilege: the job needs to read the repo and publish to Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two tag pushes race to deploy. Do NOT cancel in-progress runs: a
+# half-deployed docs site is worse than a slightly stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: site
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HUGO_VERSION: '0.164.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Relearn is a Hugo Module, not a submodule, so no recursive
+          # checkout is needed. Full history is fetched only so the release
+          # label can fall back to `git describe`.
+          fetch-depth: 0
+
+      # Hugo Modules are Go modules: the toolchain is required even though
+      # nothing Go is compiled here.
+      - uses: actions/setup-go@v5
+        with:
+          # site/go.mod, not the project's: the site is a separate module and
+          # declares only a floor, so CI is free to use any supported Go.
+          go-version-file: site/go.mod
+          cache-dependency-path: site/go.sum
+
+      - name: Install Hugo (extended)
+        run: |
+          set -euo pipefail
+          url="https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.deb"
+          curl -sSLf -o /tmp/hugo.deb "$url"
+          sudo dpkg -i /tmp/hugo.deb
+          hugo version
+
+      - name: Resolve release label
+        id: release
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.release }}" ]; then
+            label="${{ inputs.release }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            label="${GITHUB_REF_NAME}"
+          else
+            label="$(git describe --tags --abbrev=0 2>/dev/null || echo dev)"
+          fi
+          echo "label=${label}" >> "$GITHUB_OUTPUT"
+          echo "Publishing docs for: ${label}"
+
+      - uses: actions/configure-pages@v5
+        id: pages
+
+      - name: Build
+        env:
+          HUGO_ENVIRONMENT: production
+          # Honour whatever base URL Pages actually assigned, rather than
+          # hardcoding it: this keeps the build correct on a fork or if the
+          # repository is ever renamed.
+          HUGO_BASEURL: ${{ steps.pages.outputs.base_url }}/
+          HUGO_PARAMS_RELEASE: ${{ steps.release.outputs.label }}
+        run: hugo --gc --minify --printPathWarnings
+
+      # A build can "succeed" while silently emitting nothing useful, so
+      # assert on the output before handing it to the deploy step.
+      - name: Sanity-check output
+        run: |
+          set -euo pipefail
+          test -f public/index.html
+          pages=$(find public -name 'index.html' | wc -l)
+          echo "generated ${pages} pages"
+          test "${pages}" -ge 5
+          # Every diagram must have survived into the HTML; a Relearn upgrade
+          # that changes the mermaid render hook would otherwise ship a site
+          # full of raw code blocks and nobody would notice.
+          grep -rq 'class="mermaid' public/ || {
+            echo "::error::no mermaid diagrams found in the generated site"
+            exit 1
+          }
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment
