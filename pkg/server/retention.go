@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/carlosprados/ota-updater/pkg/protocol"
 )
 
 // RetentionOptions parameterizes the sweeper. A zero value is inert: with
@@ -282,7 +284,7 @@ func (r *Retention) sweepBinaries(ctx context.Context, live map[string]struct{},
 		}
 		name := e.Name()
 		hash, ok := strings.CutSuffix(name, ".bin")
-		if !ok || !isValidHashSegment(hash) {
+		if !ok || !protocol.IsValidHash(hash) {
 			r.logger.Debug("retention: unrecognized file in binaries dir, leaving in place",
 				"op", "retention", "file", name)
 			continue
@@ -346,13 +348,13 @@ func (r *Retention) deleteFile(path string, size int64, kind, reason string, sta
 func parseTransferName(name string) (kind, from, to string, ok bool) {
 	if base, found := strings.CutSuffix(name, ".delta.zst"); found {
 		f, t, split := strings.Cut(base, "_")
-		if !split || !isValidHashSegment(f) || !isValidHashSegment(t) {
+		if !split || !protocol.IsValidHash(f) || !protocol.IsValidHash(t) {
 			return "", "", "", false
 		}
 		return "delta", f, t, true
 	}
 	if base, found := strings.CutSuffix(name, ".full.zst"); found {
-		if !isValidHashSegment(base) {
+		if !protocol.IsValidHash(base) {
 			return "", "", "", false
 		}
 		return "full", base, "", true

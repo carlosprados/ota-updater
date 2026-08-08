@@ -221,8 +221,8 @@ func buildPairs(cfg *agent.Config) (agent.ClientPair, *agent.ClientPair, error) 
 		agent.NewHTTPTransport(httpClient),
 	)
 	coapPair, errCoAP := agent.NewClientPair(
-		agent.NewCoAPClient(cfg.Server.CoAPURL),
-		agent.NewCoAPTransport(cfg.Server.CoAP.ACKTimeout),
+		agent.NewCoAPClient(cfg.Server.CoAPURL, coapOpts(cfg)),
+		agent.NewCoAPTransport(coapOpts(cfg)),
 	)
 
 	switch cfg.Server.Transport {
@@ -250,5 +250,19 @@ func buildPairs(cfg *agent.Config) (agent.ClientPair, *agent.ClientPair, error) 
 		return coapPair, &httpPair, nil
 	default:
 		return agent.ClientPair{}, nil, fmt.Errorf("unknown transport %q", cfg.Server.Transport)
+	}
+}
+
+// coapOpts maps the YAML CoAP block onto the agent's dial tuning. Every field
+// under `server.coap` was previously parsed and discarded; the only one that
+// reached the code at all was ack_timeout, and it was passed into a dial
+// timeout slot that itself went unread.
+func coapOpts(cfg *agent.Config) agent.CoAPOptions {
+	return agent.CoAPOptions{
+		DialTimeout:    cfg.Server.CoAP.DialTimeout,
+		ACKTimeout:     cfg.Server.CoAP.ACKTimeout,
+		MaxRetransmits: cfg.Server.CoAP.MaxRetransmits,
+		BlockSize:      cfg.Server.CoAP.BlockSize,
+		Keepalive:      cfg.Server.CoAP.Keepalive,
 	}
 }

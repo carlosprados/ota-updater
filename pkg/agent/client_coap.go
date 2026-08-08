@@ -11,7 +11,6 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/plgd-dev/go-coap/v3/message"
 	"github.com/plgd-dev/go-coap/v3/message/codes"
-	"github.com/plgd-dev/go-coap/v3/udp"
 
 	"github.com/carlosprados/ota-updater/pkg/protocol"
 )
@@ -20,11 +19,15 @@ import (
 // It is paired with CoAPTransport for the delta download leg.
 type CoAPClient struct {
 	BaseURL string // e.g. "coap://server:5683"
+	// Options carries the NB-IoT tuning applied to every dial. Keep it equal
+	// to the paired CoAPTransport's, or the two legs of one update cycle
+	// behave differently on the same link.
+	Options CoAPOptions
 }
 
-// NewCoAPClient returns a CoAPClient bound to baseURL.
-func NewCoAPClient(baseURL string) *CoAPClient {
-	return &CoAPClient{BaseURL: strings.TrimRight(baseURL, "/")}
+// NewCoAPClient returns a CoAPClient bound to baseURL and tuned by o.
+func NewCoAPClient(baseURL string, o CoAPOptions) *CoAPClient {
+	return &CoAPClient{BaseURL: strings.TrimRight(baseURL, "/"), Options: o}
 }
 
 // Name implements ProtocolClient.
@@ -43,9 +46,9 @@ func (c *CoAPClient) Heartbeat(ctx context.Context, hb *protocol.Heartbeat) (*pr
 	if err != nil {
 		return nil, fmt.Errorf("coap heartbeat: marshal: %w", err)
 	}
-	co, err := udp.Dial(host)
+	co, err := dialCoAP(ctx, host, c.Options)
 	if err != nil {
-		return nil, fmt.Errorf("coap heartbeat: dial: %w", err)
+		return nil, fmt.Errorf("coap heartbeat: %w", err)
 	}
 	defer co.Close()
 
@@ -80,9 +83,9 @@ func (c *CoAPClient) Report(ctx context.Context, rep *protocol.UpdateReport) err
 	if err != nil {
 		return fmt.Errorf("coap report: marshal: %w", err)
 	}
-	co, err := udp.Dial(host)
+	co, err := dialCoAP(ctx, host, c.Options)
 	if err != nil {
-		return fmt.Errorf("coap report: dial: %w", err)
+		return fmt.Errorf("coap report: %w", err)
 	}
 	defer co.Close()
 
