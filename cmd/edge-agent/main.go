@@ -100,6 +100,7 @@ func run(cfgPath string) error {
 		_, err = primary.Client.Heartbeat(ctx, &protocol.Heartbeat{
 			DeviceID:    cfg.Device.ID,
 			VersionHash: hash,
+			Artifact:    cfg.Device.Artifact,
 			HWInfo:      hwInfo(),
 			Timestamp:   time.Now().Unix(),
 		})
@@ -133,6 +134,7 @@ func run(cfgPath string) error {
 	updater, err := agent.NewUpdater(agent.UpdaterDeps{
 		Config: agent.UpdaterConfig{
 			DeviceID:             cfg.Device.ID,
+			Artifact:             cfg.Device.Artifact,
 			Version:              version,
 			CheckInterval:        cfg.Update.CheckInterval,
 			Jitter:               jitter,
@@ -165,6 +167,7 @@ func run(cfgPath string) error {
 	logger.Info("edge-agent starting",
 		"op", "startup",
 		"device_id", cfg.Device.ID,
+		"artifact", cfg.Device.Artifact,
 		"version", version,
 		"primary", primary.Client.Name(),
 		"fallback_enabled", fallback != nil,

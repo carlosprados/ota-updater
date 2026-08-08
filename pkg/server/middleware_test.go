@@ -41,7 +41,7 @@ func TestRecoverHTTP_PanicBecomes500(t *testing.T) {
 }
 
 func TestHTTP_HeartbeatBodyTooLarge(t *testing.T) {
-	base, _, _, _, done := httpFixture(t)
+	base, _, done := httpFixture(t)
 	defer done()
 
 	big := bytes.NewReader(make([]byte, maxHeartbeatBody+1024))
@@ -89,11 +89,12 @@ func TestRecoverCoAP_PanicBecomes5xx(t *testing.T) {
 }
 
 func TestManifester_Cache_HitReturnsSameInstance(t *testing.T) {
-	m, _, s, oldHash := manifesterFixture(t)
-	if _, err := s.EnsureDelta(context.Background(), oldHash); err != nil {
+	f := newServerFixture(t)
+	m := f.Manifester
+	if _, err := f.Store.EnsureDelta(context.Background(), f.OldHash, f.TargetHash); err != nil {
 		t.Fatalf("EnsureDelta: %v", err)
 	}
-	hb := &protocol.Heartbeat{DeviceID: "dev-1", VersionHash: oldHash}
+	hb := f.heartbeat(f.OldHash)
 	r1, err := m.Build(context.Background(), hb)
 	if err != nil {
 		t.Fatalf("Build 1: %v", err)
@@ -112,11 +113,12 @@ func TestManifester_Cache_HitReturnsSameInstance(t *testing.T) {
 }
 
 func TestManifester_Invalidate_ForcesRebuild(t *testing.T) {
-	m, _, s, oldHash := manifesterFixture(t)
-	if _, err := s.EnsureDelta(context.Background(), oldHash); err != nil {
+	f := newServerFixture(t)
+	m := f.Manifester
+	if _, err := f.Store.EnsureDelta(context.Background(), f.OldHash, f.TargetHash); err != nil {
 		t.Fatalf("EnsureDelta: %v", err)
 	}
-	hb := &protocol.Heartbeat{DeviceID: "dev-1", VersionHash: oldHash}
+	hb := f.heartbeat(f.OldHash)
 	r1, _ := m.Build(context.Background(), hb)
 	m.Invalidate()
 	r2, _ := m.Build(context.Background(), hb)
@@ -132,7 +134,7 @@ func TestManifester_Invalidate_ForcesRebuild(t *testing.T) {
 // TestCoAP_HeartbeatInvalidCBOR_RecoverPath documents that malformed CBOR
 // is rejected with 4.00 Bad Request rather than panicking the handler.
 func TestCoAP_HeartbeatInvalidCBOR_RecoverPath(t *testing.T) {
-	addr, _, _, _, done := coapFixture(t, false)
+	addr, _, done := coapFixture(t, false)
 	defer done()
 
 	co := coapDial(t, addr)

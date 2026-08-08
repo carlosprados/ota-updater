@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/carlosprados/ota-updater/pkg/atomicio"
+	"github.com/carlosprados/ota-updater/pkg/compression"
 	"github.com/carlosprados/ota-updater/pkg/crypto"
 	"github.com/carlosprados/ota-updater/pkg/delta"
 	"github.com/carlosprados/ota-updater/pkg/protocol"
@@ -61,6 +62,16 @@ type HWInfoFunc func() protocol.HWInfo
 type UpdaterConfig struct {
 	// DeviceID identifies this device in heartbeats and update reports.
 	DeviceID string
+	// Artifact names the publication track to follow, in canonical
+	// protocol.ArtifactKey form ("keystone-agent/linux/arm64"). Empty asks
+	// the server for its default artifact — correct for a single-artifact
+	// server and required for compatibility with agents predating
+	// multi-artifact support.
+	//
+	// One Updater follows exactly one artifact. An embedder that manages
+	// several components runs one Updater per component; they can share a
+	// ProtocolClient but need distinct slot directories and state dirs.
+	Artifact string
 	// Version is the human-readable semver of the currently running binary.
 	// Injected by the caller (typically via `-ldflags "-X main.version=..."`
 	// in cmd/edge-agent; library embedders do the same from their own main).
@@ -453,6 +464,7 @@ func (u *Updater) RunOnce(ctx context.Context) error {
 		DeviceID:    u.cfg.DeviceID,
 		VersionHash: activeHash,
 		Version:     u.cfg.Version,
+		Artifact:    u.cfg.Artifact,
 		HWInfo:      u.hwInfo(),
 		Timestamp:   u.now().Unix(),
 	}
@@ -499,42 +511,71 @@ func (u *Updater) RunOnce(ctx context.Context) error {
 		return fmt.Errorf("verify manifest signature: %w", err)
 	}
 
-	deltaURL := pair.Client.DeltaURL(resp.DeltaEndpoint)
-	if deltaURL == "" {
-		return errors.New("manifest missing delta_endpoint")
+	// Transfer mode. The server sets exactly one endpoint: a patch to apply
+	// onto the running binary, or the whole compressed target when it has no
+	// diffable ancestor for this device. Both transfers are covered by the
+	// same signature over (TargetHash, DeltaHash) — see docs/signing.md.
+	fullDownload := resp.BinaryEndpoint != ""
+	endpoint := resp.DeltaEndpoint
+	if fullDownload {
+		endpoint = resp.BinaryEndpoint
 	}
+	transferURL := pair.Client.DeltaURL(endpoint)
+	if transferURL == "" {
+		return errors.New("manifest missing delta_endpoint and binary_endpoint")
+	}
+	u.logger.Info("transfer starting",
+		"op", "update_cycle", "device_id", u.cfg.DeviceID,
+		"mode", transferModeName(fullDownload),
+		"transfer_size", resp.DeltaSize, "target_size", resp.TargetSize,
+		"version_hash", activeHash, "target_hash", resp.TargetHash,
+	)
 	dl := NewDownloader(pair.Transport, DownloaderConfig{
 		StatePath:    u.downloadState,
 		MaxRetries:   u.cfg.MaxRetries,
 		RetryBackoff: u.cfg.RetryBackoff,
 	}, u.logger)
 	target := FetchTarget{
-		URL:       deltaURL,
+		URL:       transferURL,
 		DeltaHash: resp.DeltaHash,
 		TotalSize: resp.DeltaSize,
 		OutPath:   u.deltaStaging,
 	}
 	if err := dl.Download(ctx, target); err != nil {
-		return fmt.Errorf("download delta: %w", err)
+		return fmt.Errorf("download %s: %w", transferModeName(fullDownload), err)
 	}
 
-	// Patch + verify reconstruction.
-	activeBin, err := os.ReadFile(activePath)
+	// Reconstruct. The Downloader has already verified the transfer bytes
+	// against the signed DeltaHash, so anything that fails from here on is a
+	// local fault (corrupt slot, out of memory) rather than a hostile server.
+	transferBin, err := os.ReadFile(u.deltaStaging)
 	if err != nil {
-		return fmt.Errorf("read active binary: %w", err)
+		return fmt.Errorf("read staged transfer: %w", err)
 	}
-	deltaBin, err := os.ReadFile(u.deltaStaging)
-	if err != nil {
-		return fmt.Errorf("read staged delta: %w", err)
-	}
-	newBin, err := delta.Apply(activeBin, deltaBin)
-	if err != nil {
-		return fmt.Errorf("apply delta: %w", err)
+	var newBin []byte
+	if fullDownload {
+		// A full transfer is the zstd-compressed target: decompress, done.
+		// Notably this path does NOT read the active slot, which is exactly
+		// why it works for a device whose current binary the server has
+		// never seen — or whose slot is damaged.
+		newBin, err = compression.DecompressBytes(transferBin)
+		if err != nil {
+			return fmt.Errorf("decompress full binary: %w", err)
+		}
+	} else {
+		activeBin, rerr := os.ReadFile(activePath)
+		if rerr != nil {
+			return fmt.Errorf("read active binary: %w", rerr)
+		}
+		newBin, err = delta.Apply(activeBin, transferBin)
+		if err != nil {
+			return fmt.Errorf("apply delta: %w", err)
+		}
 	}
 	actualHash := sha256HexBytes(newBin)
 	if actualHash != resp.TargetHash {
-		return fmt.Errorf("reconstructed binary hash mismatch: got %s want %s",
-			actualHash, resp.TargetHash)
+		return fmt.Errorf("reconstructed binary hash mismatch (%s): got %s want %s",
+			transferModeName(fullDownload), actualHash, resp.TargetHash)
 	}
 
 	// Stage in the inactive slot.
@@ -904,4 +945,13 @@ func defaultHWInfo() protocol.HWInfo {
 		Arch: runtime.GOARCH,
 		OS:   runtime.GOOS,
 	}
+}
+
+// transferModeName labels the two ways a target reaches the device, for logs
+// and error messages.
+func transferModeName(full bool) string {
+	if full {
+		return "full"
+	}
+	return "delta"
 }

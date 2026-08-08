@@ -21,17 +21,26 @@ coap:
   addr: ":5683"                    # UDP plain. DTLS (coaps://) is not enabled.
 
 store:
-  binaries_dir: "./store/binaries" # versioned source binaries: {hash}.bin
-  deltas_dir: "./store/deltas"     # cached deltas: {from}_{to}.delta.zst
+  binaries_dir: "./store/binaries" # content-addressed binaries: {hash}.bin
+  deltas_dir: "./store/deltas"     # derived transfer artifacts:
+                                   #   {from}_{to}.delta.zst  (patches)
+                                   #   {hash}.full.zst        (whole binaries)
+                                   # Everything here is cache: deleting it
+                                   # costs CPU, never data.
+  state_file: "./store/artifacts.json"
+                                   # where the artifact registry persists.
+                                   # WITHOUT this, anything published through
+                                   # POST /admin/artifacts is lost on restart.
 
-  # Memory bounds. The server is designed to hold a strictly bounded amount
-  # of data in RAM regardless of how many distinct source versions agents
-  # have ever reported. See README "Memory bounds" for the full model.
-  target_max_memory_mb: 200        # keep the active target in RAM only if it
-                                   # fits under this cap; larger targets are
-                                   # read from disk on every generation.
+  # Memory bounds. The server holds a strictly bounded amount of data in RAM
+  # regardless of how many artifacts or source versions exist. See README
+  # "Memory bounds" for the full model.
+  target_cache_mb: 200             # byte budget for uncompressed delta-target
+                                   # binaries held in RAM, shared across ALL
+                                   # artifacts. Targets larger than the budget
+                                   # are read from disk per generation.
   hot_delta_cache_mb: 512          # byte budget of the in-RAM LRU that fronts
-                                   # disk reads of cached deltas. Serves
+                                   # disk reads of transfer artifacts. Serves
                                    # campaign bursts (many devices asking the
                                    # same delta) without hitting the disk.
   delta_concurrency: 2             # max concurrent bsdiff generations. Raise
@@ -43,14 +52,59 @@ store:
 crypto:
   private_key: "./keys/server.key" # Ed25519 PKCS#8 PEM, mode 0600
 
-target:
-  version: "1.0.0"                 # human-readable label returned to agents
-  binary: "./store/binaries/latest" # update this path (or replace the file)
-                                    # to publish a new release; fsnotify picks
-                                    # it up, or call POST /admin/reload.
+# Artifacts are the publication tracks this server serves. One server handles
+# N components x M versions x K architectures: each entry below is one
+# (name, os, arch) coordinate with its own current target.
+#
+# `os` and `arch` are optional but coupled — set both or neither. Omit them
+# for platform-independent artifacts (config bundles, ML models, asset packs).
+#
+# Config is authoritative: every artifact listed here is re-published from its
+# `binary` path on each boot, overriding whatever the admin API left behind.
+# Artifacts published ONLY through the API are untouched and survive via
+# store.state_file.
+#
+# Each `binary` path is watched with fsnotify, so replacing the file publishes
+# a new release. POST /admin/reload does the same on demand.
+artifacts:
+  - name: "edge-agent"
+    os: "linux"
+    arch: "arm64"
+    version: "1.0.0"               # human-readable label returned to agents
+    binary: "./store/binaries/latest"
+
+  # - name: "edge-agent"
+  #   os: "linux"
+  #   arch: "amd64"
+  #   version: "1.0.0"
+  #   binary: "/srv/artifacts/edge-agent-linux-amd64"
+  #
+  # - name: "tariff-table"          # platform-independent: no os/arch
+  #   version: "2024-06"
+  #   binary: "/srv/artifacts/tariff-table.bin"
+
+# Which artifact answers heartbeats that name none. Required when more than
+# one artifact is declared; inferred when there is exactly one. Agents that
+# send no `artifact` field (single-artifact deployments, older builds) land
+# here.
+default_artifact: "edge-agent/linux/arm64"
+
+# Legacy single-artifact form. Still supported: if `artifacts:` is empty and
+# `target.binary` is set, it is folded into one artifact named "default".
+# Prefer the `artifacts:` list above for anything new.
+# target:
+#   version: "1.0.0"
+#   binary: "./store/binaries/latest"
 
 admin:
-  # Bearer token required for POST /admin/reload and POST /admin/loglevel.
+  # Bearer token required for every /admin/* endpoint:
+  #   POST   /admin/reload     re-read file-backed artifacts
+  #   GET    /admin/artifacts  list publication tracks
+  #   POST   /admin/artifacts  publish/update a track from a file path
+  #   DELETE /admin/artifacts?artifact=<key>
+  #   POST   /admin/default    choose the track for unnamed heartbeats
+  #   POST   /admin/gc         run a retention sweep now
+  #   POST   /admin/loglevel   change verbosity at runtime
   # Minimum length: 32 characters (~128 bits of entropy). The server rejects
   # shorter tokens at config load. Generate a fresh one with:
   #
@@ -78,6 +132,46 @@ manifest:
   cache_size: 4096                 # signed-manifest LRU entry count. Each
                                    # entry is ~500 B; 4096 keeps this cache
                                    # around 2 MiB in the worst case.
+  # When the server cannot build a patch for a device — it has never seen that
+  # device's current binary (factory flash, sideload) or the source aged out of
+  # retention — it offers the whole compressed target instead. Turning this off
+  # restores the old behaviour, where such a device is told "no update
+  # available" on every heartbeat and stays stranded forever. Only sensible if
+  # downlink is so scarce that a full transfer is never acceptable AND you
+  # handle stranded devices out of band.
+  allow_full_download: true
+
+# Retention bounds how much disk the store consumes over time. Nothing here is
+# needed for correctness: with retention disabled the server works exactly as
+# before and grows without limit. It matters at scale, because every release
+# adds a binary plus one delta per source version still in the field.
+#
+# Two classes of file are treated very differently:
+#   - Transfer artifacts (deltas, compressed binaries) are pure cache and are
+#     collected aggressively.
+#   - Binaries are the only copy of something you produced. They are collected
+#     only with collect_orphan_binaries, only when no artifact references them,
+#     and only after a grace period.
+#
+# Collecting a binary never strands a device: agents still on it fall back to
+# a full download. The cost is downlink, not availability.
+retention:
+  enabled: false                   # off by default — deleting an operator's
+                                   # binaries is not a sensible default.
+  interval: "6h"                   # between automatic sweeps
+  history_depth: 10                # superseded targets kept per artifact as
+                                   # valid delta sources. Devices further
+                                   # behind still update, via full download.
+  delta_max_age: "720h"            # drop transfer artifacts older than 30d.
+                                   # 0 disables.
+  deltas_max_total_mb: 0           # cap the deltas dir; oldest evicted first.
+                                   # 0 disables.
+  collect_orphan_binaries: false   # delete binaries no artifact references.
+                                   # The only setting that can destroy
+                                   # something not reconstructible.
+  orphan_binary_min_age: "24h"     # grace period protecting a freshly written
+                                   # binary from collection before the publish
+                                   # that references it lands.
 
 metrics:
   # Separate HTTP listener for Prometheus /metrics and optional /debug/pprof.

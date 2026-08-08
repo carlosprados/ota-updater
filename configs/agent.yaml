@@ -20,6 +20,12 @@ server:
 
 device:
   id: "edge-001"                                 # unique per device
+  # Which publication track on the server this agent follows, as
+  # "name/os/arch" (or just "name" for platform-independent artifacts).
+  # Leave empty to ask the server for its default artifact — correct for a
+  # single-artifact server, and what agents predating multi-artifact support
+  # send. One agent follows exactly one artifact.
+  artifact: "edge-agent/linux/arm64"
   slots_dir: "/opt/agent/slots"                  # A/B slot binaries live here
   active_symlink: "/opt/agent/current"           # symlink → currently active slot
   disk_space_min_free_pct: 10                    # startup WARN if slots_dir FS
