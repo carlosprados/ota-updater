@@ -51,9 +51,9 @@ func patchApply(old, patch []byte) ([]byte, error) {
 
 func main() {
 	mode := os.Args[1]
-	oldBin, err := os.ReadFile("/tmp/pb/"+os.Getenv("PB")+"v0")
+	oldBin, err := os.ReadFile("/tmp/pb/" + os.Getenv("PB") + "v0")
 	must(err)
-	newBin, err := os.ReadFile("/tmp/pb/"+os.Getenv("PB")+"v1")
+	newBin, err := os.ReadFile("/tmp/pb/" + os.Getenv("PB") + "v1")
 	must(err)
 
 	start := time.Now()
