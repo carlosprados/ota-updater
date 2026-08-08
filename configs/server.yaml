@@ -45,7 +45,21 @@ store:
                                    # same delta) without hitting the disk.
   delta_concurrency: 2             # max concurrent bsdiff generations. Raise
                                    # only on hosts with generous RAM, since
-                                   # each bsdiff peaks at ~20x the binary size.
+                                   # each bsdiff peaks at ~21x the binary size.
+  # Refuse to diff a pair where either binary exceeds this size, and serve the
+  # whole compressed target instead. 0 disables the cap.
+  #
+  # bsdiff's peak memory scales linearly at roughly 21x the larger input -
+  # measured, not estimated: 296 MiB for a 13.6 MB binary, 557 MiB for 27.3 MB.
+  # Most of it is the suffix array, which cannot be paged out. Without a cap,
+  # artifact growth becomes an OOM: 50 MB is ~1 GiB per generation, times
+  # delta_concurrency.
+  #
+  # At the default 32 MiB that is ~670 MiB per generation and ~1.3 GiB at
+  # concurrency 2. Typical Go service binaries sit well below it, so the cap
+  # is inert for most fleets; when it does fire, the server logs a WARN and
+  # updater_deltas_served_total{mode="full"} rises.
+  delta_max_source_mb: 32
   disk_space_min_free_pct: 10      # startup WARN if binaries/deltas FS is below
   disk_space_min_free_mb: 100      #   either threshold. 0 disables that check.
 

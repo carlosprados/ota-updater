@@ -72,6 +72,10 @@ type StoreYAMLConfig struct {
 	TargetCacheMB    int `yaml:"target_cache_mb"`
 	HotDeltaCacheMB  int `yaml:"hot_delta_cache_mb"` // byte budget of the hot transfer LRU
 	DeltaConcurrency int `yaml:"delta_concurrency"`  // max concurrent bsdiff runs
+	// DeltaMaxSourceMB refuses to diff any pair where either binary exceeds
+	// this size, serving the whole compressed target instead. 0 disables the
+	// cap. See the StoreOptions field for the memory arithmetic.
+	DeltaMaxSourceMB int `yaml:"delta_max_source_mb"`
 	// DiskSpaceMinFreePct raises a startup warning when the filesystem
 	// containing BinariesDir/DeltasDir has less than this percentage of
 	// free space. 0 disables the check. Default 10.
@@ -234,6 +238,15 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Store.DeltaConcurrency == 0 {
 		c.Store.DeltaConcurrency = 2
+	}
+	if c.Store.DeltaMaxSourceMB == 0 {
+		// Default ON. bsdiff peaks near 21x the larger input, so 32 MiB is
+		// about 670 MiB per generation and ~1.3 GiB at the default
+		// concurrency of 2 - large, but survivable on a modest host. Above
+		// this the server stops diffing rather than dying, and says so.
+		// Typical Go service binaries are well under it (this project's own
+		// server binary is ~14 MB), so the cap is inert for most fleets.
+		c.Store.DeltaMaxSourceMB = 32
 	}
 	if c.Manifest.CacheSize == 0 {
 		c.Manifest.CacheSize = 4096

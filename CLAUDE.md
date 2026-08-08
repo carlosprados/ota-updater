@@ -113,6 +113,49 @@ verificados y validación de layout en `NewSlotManager` (ítem 4); comentario de
 no-op silencioso porque Pages clavea por SHA (ítem 7); ítems 5 y 6 a
 documentación.
 
+## RAM de bsdiff: medido y acotado (2026-08-08)
+
+Medido con dos builds consecutivas reales del propio `update-server`:
+
+| N | pico RSS | ratio | gen |
+|---|---|---|---|
+| 13,6 MB | 296 MiB | 21,7× | 3,2 s |
+| 27,3 MB | 557 MiB | 20,4× | 24,9 s* |
+
+*El tiempo del caso grande NO es representativo (par sintético duplicado,
+patológico para un suffix sort). La RAM sí, porque depende del tamaño.
+
+**Escala lineal.** El 16N de los ~21N son `iii` y `vvv` en `qsufsort`, dos
+`[]int` (8 bytes en 64 bits). Extrapolación: 50 MB → ~1 GiB, 100 MB → ~2 GiB,
+por `delta_concurrency`.
+
+**Decisión: `store.delta_max_source_mb`, default 32, ACTIVO por defecto.** Por
+encima del cap no se diffea y el manifester sirve el target entero comprimido.
+Clave de diseño: **la decisión la toma el manifester, no el store**. Si sólo se
+bloqueara en el store, el manifester despacharía la generación, no obtendría
+nada y devolvería `RetryAfter` eternamente → dispositivo varado, justo el fallo
+que la descarga completa existe para eliminar. El store lo enforcea *además*
+(`ErrDeltaTooLarge`) porque `pkg/server` es importable. Un delta ya cacheado se
+sirve siempre, sea cual sea el cap.
+
+### Alternativas evaluadas y descartadas
+
+- **`icedream/go-bsdiff`**: usa **CGO**. Rompe `CGO_ENABLED=0`. Descartado.
+- **Fork con `[]int32`**: PROBADO y medido en scratchpad. 21,7× → **15,0×**
+  (−30%) y +28% de velocidad. Round-trip verificado: la librería original
+  aplica el parche del fork y reproduce el target byte a byte, formato en disco
+  intacto. Sólo 5 firmas tocan `[]int` en 510 líneas. **Pendiente de decisión**:
+  implica mantener un fork. Caveat: la conversión rápida da un parche 3% mayor
+  (258.140 vs 250.167 B) — válido pero NO bit-idéntico, así que cambia algún
+  desempate del orden; habría que entender la diferencia antes de producción.
+- **`zstd --patch-from` en Go puro**: VIABLE con `klauspost/compress`, que ya
+  es dependencia (`WithEncoderDictRaw` + `WithWindowSize`; `MaxWindowSize` es
+  512 MiB). Medido: parche 910.609 B vs 250.167 B (**3,6× mayor**), gen 0,27 s
+  vs 3,18 s, pico 133 MiB vs 296 MiB (9,3× vs 21,7×). **No sustituir**: la
+  generación es O(versiones) y se amortiza; la transferencia es O(dispositivos)
+  y se multiplica. 660 KB extra por dispositivo son +4,4 min de radio a 20 kbps.
+  Candidato sólo como modo opcional para artefactos grandes.
+
 ## Decisiones de proyecto
 
 - **Servidor multi-artefacto** (decidido 2026-08-07, rama `ota/multi-artifact-server`).
