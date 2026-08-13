@@ -1,0 +1,457 @@
+/* ==========================================================================
+   enredando-skin.css — structural half of the carlos.enredando.me skin
+   --------------------------------------------------------------------------
+   theme-enredando.css carries the palette and the fonts; everything that is
+   not a custom property lives here, because Relearn inlines a variant file
+   inside a `:root[data-r-theme-variant=…] { … }` wrapper and would nest any
+   plain selector inside it.
+
+   Loaded last, from layouts/partials/custom-header.html, so it wins over the
+   theme without needing !important on structural rules.
+
+   What is being reproduced, in order of how much of the identity it carries:
+     1. sharp corners — the blog has no border-radius anywhere
+     2. the 40px grid over a near-black ground, plus one cyan glow
+     3. mono + uppercase + wide tracking for every non-prose label
+     4. a cyan hairline under section heads, with a short glowing segment
+   ========================================================================== */
+
+:root {
+  --en-cyan: #38bdf8;
+  --en-cyan-dim: rgba(56, 189, 248, 0.55);
+  --en-green: #4ade80;
+  --en-violet: #c084fc;
+  --en-amber: #fbbf24;
+
+  --en-fg-0: #e6edf7;
+  --en-fg-1: #aab4c4;
+  --en-fg-2: #6b7687;
+  --en-fg-3: #4a5466;
+
+  --en-bg-0: #04070c;
+  --en-bg-1: #0a0f16;
+  --en-bg-2: #0f1520;
+
+  --en-border: rgba(148, 180, 220, 0.08);
+  --en-border-strong: rgba(148, 180, 220, 0.18);
+
+  --en-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', menlo, monospace;
+  --en-display: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+}
+
+/* ─── 1 · Sharp corners ─────────────────────────────────────────────────────
+   Relearn rounds code blocks, buttons, tags, notices, tabs, the search box
+   and the scrollbar thumbs at seven different radii. The blog rounds nothing.
+   This single rule does more for the resemblance than any colour does — but
+   it deliberately spares circles: read-icons and the print/expander glyphs
+   are drawn with border-radius:100%, and squaring those turns them into
+   boxes rather than into a sharper version of themselves. */
+#R-body :not(.read-icon):not(svg):not(circle),
+#R-sidebar :not(.read-icon):not(svg):not(circle),
+pre,
+code,
+kbd,
+table,
+th,
+td,
+input,
+button,
+.btn,
+.btn > button,
+.box,
+.cstyle,
+.badge,
+.tag,
+.searchbox,
+.autocomplete-suggestions {
+  border-radius: 0;
+}
+/* Restore the ones that are meant to be round. */
+.read-icon,
+.R-taxonomy.tags a.term-link:before {
+  border-radius: 100%;
+}
+
+/* ─── 2 · The ground ────────────────────────────────────────────────────────
+   #R-body is the fixed-height viewport pane; #R-body-inner is what actually
+   scrolls. So a background painted here behaves like the blog's
+   `background-attachment: fixed` without needing the property — the grid
+   stays put while the text moves over it.
+
+   Layer order matters: the glow has to sit above the grid lines or the lines
+   cut visible seams through it. */
+#R-body {
+  background-color: var(--en-bg-0);
+  background-image:
+    radial-gradient(ellipse 800px 600px at 55% -120px, rgba(56, 189, 248, 0.1), transparent 60%),
+    linear-gradient(rgba(148, 180, 220, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 180, 220, 0.045) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    40px 40px,
+    40px 40px;
+  background-repeat: no-repeat, repeat, repeat;
+}
+
+/* The scan line. On the blog this is a real element (.en-scan); here it is a
+   pseudo-element on the pane. The travel has to be 100vh, not 100%: the
+   percentage resolves against the animated element's own height, and this
+   element is 1px tall, so `translateY(100%)` moves it one single pixel and the
+   line just sits at the top looking like a stray border. #R-body is exactly
+   viewport-tall, so vh is the right unit here. */
+#R-body::before {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: 1px;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.4;
+  background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.5) 50%, transparent);
+  animation: en-scan 10s linear infinite;
+}
+@keyframes en-scan {
+  to {
+    transform: translateY(100vh);
+  }
+}
+
+/* The sidebar is a shade darker than the page and separated by a hairline,
+   the way the blog separates its cards from the ground. */
+#R-sidebar {
+  border-inline-end: 1px solid var(--en-border-strong);
+}
+
+/* ─── 3 · Chrome typography ─────────────────────────────────────────────────
+   The blog's rule: prose is Inter, everything that labels something is
+   JetBrains Mono, uppercase, tracked out. That covers the sidebar menu,
+   breadcrumbs, table headers, tags, footer and the search field. */
+#R-sidebar .R-sidebarmenu > ul > li > a,
+#R-sidebar .nav-title {
+  font-family: var(--en-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+/* Nested pages keep the mono but drop the uppercase: a submenu entry like
+   "Signature scheme" set in caps at this tracking wraps to two lines in a
+   17rem sidebar, and the wrap reads as a second item. */
+#R-sidebar .R-sidebarmenu ul ul a {
+  font-family: var(--en-mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+}
+/* The blog prefixes every nav item with a dim `//`. */
+#R-sidebar .R-sidebarmenu > ul > li > a::before {
+  content: '// ';
+  color: var(--en-fg-3);
+}
+#R-sidebar .R-sidebarmenu > ul > li.active > a::before,
+#R-sidebar .R-sidebarmenu > ul > li > a:hover::before {
+  color: var(--en-cyan-dim);
+}
+
+/* Wordmark — the blog's .en-brand, ported. Markup comes from the overridden
+   partials/logo.html; the mark and its two corner dots are drawn in CSS so
+   they follow the accent colour instead of being baked into an image. */
+#R-logo.en-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  font-family: var(--en-mono);
+  text-decoration: none;
+  padding-block: 0.35rem;
+}
+.en-brand-mark {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  position: relative;
+  border: 1px solid var(--en-cyan-dim);
+  color: var(--en-cyan);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+.en-brand-mark::before,
+.en-brand-mark::after {
+  content: '';
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  background: var(--en-cyan);
+  border-radius: 50%;
+}
+.en-brand-mark::before {
+  top: -2px;
+  inset-inline-start: -2px;
+}
+.en-brand-mark::after {
+  bottom: -2px;
+  inset-inline-end: -2px;
+}
+.en-brand-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  line-height: 1.15;
+  min-width: 0;
+}
+/* Bright/dim split, same as `carlos` + `.enredando.me` on the blog. The gap
+   is a margin rather than a space in the markup so the two tones stay
+   selectable as one word. */
+.en-brand-name {
+  font-size: 13px;
+  white-space: nowrap;
+}
+.en-brand-name b {
+  color: var(--en-fg-0);
+  font-weight: 600;
+}
+.en-brand-name span {
+  color: var(--en-fg-2);
+  margin-inline-start: 0.35em;
+}
+.en-brand-suffix {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--en-fg-3);
+  white-space: nowrap;
+}
+#R-logo.en-brand:hover .en-brand-name b {
+  color: var(--en-cyan);
+}
+
+/* Search field: square, sunken, mono placeholder — matches the blog's `[/]`
+   trigger in tone even though Relearn shows a full input. */
+#R-sidebar .searchbox {
+  border: 1px solid var(--en-border-strong);
+  background: var(--en-bg-1);
+}
+#R-sidebar .searchbox input {
+  font-family: var(--en-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+}
+#R-sidebar .searchbox input::placeholder {
+  color: var(--en-fg-3);
+  text-transform: uppercase;
+}
+
+/* Breadcrumbs stand in for the blog's shell prompt line: mono, small, dim,
+   with the accent reserved for the trail separators. */
+#R-topbar .topbar-breadcrumbs {
+  font-family: var(--en-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+#R-topbar .topbar-breadcrumbs li + li::before {
+  color: var(--en-cyan-dim);
+}
+
+/* A cyan hairline under the topbar, fading at both ends — the blog's
+   .en-topbar::after. Relearn already draws a 1px separator there, so this
+   glow is layered as a pseudo-element instead of replacing it. */
+#R-topbar {
+  position: relative;
+  backdrop-filter: blur(12px);
+}
+#R-topbar::after {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  bottom: -1px;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent 10%, rgba(56, 189, 248, 0.5) 50%, transparent 90%);
+}
+
+#R-footer,
+.ota-footer {
+  font-family: var(--en-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  color: var(--en-fg-2);
+}
+
+/* ─── 4 · Section heads ─────────────────────────────────────────────────────
+   The blog's h1 is left-aligned display type, not the theme's centred
+   uppercase Roboto Flex. Uppercasing a title like "Signature scheme" also
+   loses the only casing cue the reader has that `bsdiff` is a program name,
+   so the transform goes rather than being restyled. */
+#R-body-inner > .flex-block-wrapper article h1 {
+  text-align: start;
+  text-transform: none;
+  font-size: 3rem;
+  margin-block: 1.25rem 1.5rem;
+}
+
+/* h2 gets .en-sec-head's treatment: a full-width hairline with a short
+   glowing cyan segment at the start.
+
+   `overflow: visible` is load-bearing, not tidying. The theme sets
+   `overflow-x: hidden` on every heading as a guard against a long title
+   scrolling the page; per spec that makes overflow-y compute to `auto`, so
+   the heading is a scroll container. The ::after below sits at bottom:-1px,
+   one pixel outside the padding box — enough to grow scrollHeight by 1 and
+   give every h2 on the site its own 15px vertical scrollbar. The guard is
+   redundant anyway: `overflow-wrap: break-word` is already set on the same
+   headings and is what actually stops the overflow it was added for. */
+#R-body-inner article h2 {
+  position: relative;
+  overflow: visible;
+  margin-top: 2.75rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--en-border);
+}
+#R-body-inner article h2::after {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0;
+  bottom: -1px;
+  width: 72px;
+  height: 1px;
+  background: var(--en-cyan);
+  box-shadow: 0 0 10px var(--en-cyan);
+}
+#R-body-inner article h3 {
+  margin-top: 2rem;
+}
+
+/* ─── Prose ─────────────────────────────────────────────────────────────────
+   The blog underlines links on hover with a dashed rule rather than a solid
+   one, and never underlines them at rest. */
+#R-body-inner article a:not(.btn):not(.term-link) {
+  text-decoration: none;
+  border-bottom: 1px solid rgba(56, 189, 248, 0.25);
+}
+#R-body-inner article a:not(.btn):not(.term-link):hover {
+  border-bottom-style: dashed;
+  border-bottom-color: var(--en-cyan);
+}
+
+/* Blockquote as the blog's .en-philosophy pull-box: square, hairline, 2px
+   cyan on the leading edge, tinted by a gradient that fades to nothing. */
+#R-body-inner article blockquote {
+  border: 1px solid var(--en-border);
+  border-inline-start: 2px solid var(--en-cyan);
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.04), transparent 60%);
+  padding: 1.1rem 1.4rem;
+  color: var(--en-fg-1);
+}
+
+/* Tables: hairline grid, mono uppercase headers. */
+#R-body-inner article table {
+  border: 1px solid var(--en-border);
+  background: rgba(8, 14, 20, 0.5);
+}
+#R-body-inner article table th {
+  font-family: var(--en-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--en-cyan);
+  border-bottom: 1px solid var(--en-border-strong);
+}
+#R-body-inner article table td {
+  border-top: 1px solid var(--en-border);
+}
+/* Markdown has no way to write a table without a header row, so the two-column
+   feature tables on the home page open with `| | |`. Unstyled that is
+   invisible; with a border and a background under the header it becomes an
+   empty bar above the first real row. Hidden only when every cell in the head
+   is empty, so a genuine header is never suppressed. */
+#R-body-inner article table thead:not(:has(th:not(:empty))) {
+  display: none;
+}
+
+/* Unordered lists take the blog's `▸` marker in the accent colour. Ordered
+   lists keep their numbers — a numbered step loses its meaning as a glyph. */
+#R-body-inner article ul:not(.R-taxonomy):not(.tags) > li {
+  list-style: none;
+  position: relative;
+}
+#R-body-inner article ul:not(.R-taxonomy):not(.tags) > li::before {
+  content: '▸';
+  position: absolute;
+  inset-inline-start: -1.1em;
+  color: var(--en-cyan-dim);
+  font-family: var(--en-mono);
+}
+
+/* Code blocks sit on the blog's card colour with a hairline, and the line
+   numbers gutter is dimmed to fg-3 so it stops competing with the code. */
+#R-body-inner article pre:not(.mermaid) {
+  border: 1px solid var(--en-border-strong);
+}
+#R-body-inner article .chroma .lnt,
+#R-body-inner article .chroma .ln {
+  color: var(--en-fg-3);
+}
+
+/* Notices/boxes: square, hairline, and the caption in mono caps so a box
+   title reads as a label rather than as another heading level. */
+#R-body-inner article .box > .box-label,
+#R-body-inner article .box > .box-content > .box-label {
+  font-family: var(--en-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+#R-body-inner article .box {
+  border: 1px solid var(--en-border-strong);
+}
+
+/* ─── Diagrams ──────────────────────────────────────────────────────────────
+   Fixed images: mermaidZoom is off in hugo.toml, so no pan, no wheel-zoom
+   and no reset button. What is left is to frame them like the blog frames a
+   card, and to stop a wide one from pushing the page sideways — it scrolls
+   inside its own box instead. */
+.mermaid-container {
+  border: 1px solid var(--en-border);
+  background: rgba(8, 14, 20, 0.5);
+  overflow-x: auto;
+}
+.mermaid {
+  border: none;
+}
+
+/* Below the width where Relearn folds the sidebar away, the content column is
+   ~460px and mermaid's `width: 100%` shrinks a 1280px flowchart to 0.35 —
+   6px labels. With zoom deliberately switched off there is no way back from
+   that, so the diagram is released to its own width and the container scrolls
+   instead. Same contract the wide tables and code blocks already follow.
+
+   The lever is mermaid's own inline `max-width: <intrinsic>px`, which it
+   writes next to `width="100%"`. Overshooting width and letting that clamp it
+   lands the SVG on exactly its intrinsic size. `auto`, `max-content` and
+   `fit-content` all measure 0 here instead — the theme's
+   `.mermaid > svg { height: initial !important }` removes the intrinsic
+   height a viewBox-only SVG needs to derive a width from, so there is nothing
+   left for them to resolve against. 200rem is arbitrary only in the sense
+   that any value above the widest diagram works; the clamp, not the number,
+   sets the result. */
+@media screen and (max-width: 59.999rem) {
+  .mermaid-container > .mermaid {
+    width: max-content;
+    max-width: none;
+  }
+  .mermaid-container > .mermaid > svg {
+    width: 200rem !important;
+  }
+}
+
+/* ─── Motion ────────────────────────────────────────────────────────────────
+   Same contract as the blog: the scan line is decoration, so it is the first
+   thing to go when the reader asks for less movement. */
+@media (prefers-reduced-motion: reduce) {
+  #R-body::before {
+    animation: none;
+  }
+}

@@ -24,8 +24,8 @@ flowchart TD
     HAS -->|no| FULL
     HAS -->|yes| DELTA["delta path<br/><i>hash may now build a path</i>"]
 
-    classDef bad fill:#d930252e,stroke:#d93025
-    classDef ok fill:#34a8532e,stroke:#34a853
+    classDef bad fill:#f871712e,stroke:#f87171
+    classDef ok fill:#4ade802e,stroke:#4ade80
     class E400,E404 bad
     class FULL,DELTA ok
 ```
