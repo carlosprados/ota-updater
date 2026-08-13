@@ -137,8 +137,8 @@ flowchart LR
     BUCKET -->|yes| U401["401 Unauthorized"]
     BUCKET -->|no| U429["429 + Retry-After: 1"]
 
-    classDef ok fill:#34a8532e,stroke:#34a853
-    classDef bad fill:#d930252e,stroke:#d93025
+    classDef ok fill:#4ade802e,stroke:#4ade80
+    classDef bad fill:#f871712e,stroke:#f87171
     class PASS ok
     class U401,U429 bad
 ```
@@ -175,8 +175,8 @@ flowchart TD
     CAP -->|yes| EVICT["evict oldest first<br/>until it fits"]
     CAP -->|no| DONE["done"]
 
-    classDef del fill:#d930252e,stroke:#d93025
-    classDef keep fill:#34a8532e,stroke:#34a853
+    classDef del fill:#f871712e,stroke:#f87171
+    classDef keep fill:#4ade802e,stroke:#4ade80
     class DEL,EVICT del
     class KEEP,LEAVE keep
 ```
@@ -193,8 +193,8 @@ flowchart TD
     B2 -->|no| SKIP
     B2 -->|yes| DELBIN["delete binary"]
 
-    classDef del fill:#d930252e,stroke:#d93025
-    classDef keep fill:#34a8532e,stroke:#34a853
+    classDef del fill:#f871712e,stroke:#f87171
+    classDef keep fill:#4ade802e,stroke:#4ade80
     class DELBIN del
     class SKIP keep
 ```

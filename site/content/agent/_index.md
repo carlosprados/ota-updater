@@ -13,25 +13,20 @@ The device keeps two slot files and a symlink. Updates are written to the
 stateDiagram-v2
     direction LR
 
-    state "slot A active" as A
-    state "slot B active" as B
-    state "staging in B" as SB
-    state "staging in A" as SA
+    state "running on X<br/><i>Y is inactive</i>" as RUN
+    state "staging into Y<br/><i>X still serving</i>" as STAGE
+    state "running on Y<br/><i>X is inactive</i>" as SWAPPED
 
-    A --> SB: write reconstructed<br/>binary to B
-    SB --> B: .pending_update written,<br/>symlink swapped, exec
-    B --> SA: next update
-    SA --> A: swap back
-
-    B --> A: rollback<br/><i>health check failed</i>
-    A --> B: rollback
-
-    note right of SB
-        The active slot is never
-        touched while staging.
-        A crash here loses nothing.
-    end note
+    RUN --> STAGE: write binary
+    STAGE --> SWAPPED: marker, swap, exec
+    SWAPPED --> RUN: rollback
 ```
+
+The two slots are symmetric, so the cycle is drawn once with `X` and `Y`
+standing for whichever of A/B is currently active: the next update runs the
+same three steps with the roles exchanged. The active slot is never written
+to while staging, which is why a crash during the download costs nothing but
+the download.
 
 The ordering is chosen so that **every** crash point is recoverable:
 
@@ -110,8 +105,8 @@ flowchart TD
     MARK --> SWAP["swap symlink"]
     SWAP --> EXEC["syscall.Exec"]
 
-    classDef bad fill:#d930252e,stroke:#d93025
-    classDef ok fill:#34a8532e,stroke:#34a853
+    classDef bad fill:#f871712e,stroke:#f87171
+    classDef ok fill:#4ade802e,stroke:#4ade80
     class ABORT,SKIP bad
     class EXEC ok
 ```

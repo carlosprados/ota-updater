@@ -1,0 +1,46 @@
+{{- /*
+  custom-header.html — Relearn's <head> hook.
+
+  Two jobs, in the order they have to happen:
+
+  1. Pull the three families the blog uses. They are named in
+     theme-enredando.css but a colour variant cannot load a font, so the
+     @font-face has to come from here.
+
+     The `ital,wght@0,…;1,…` form is not padding. The blog's request omits the
+     italic axis, so every <i> on the page is a *synthesised* oblique: the
+     browser shears the roman face, and the sheared ink reaches past the
+     layout box the glyph advance describes. In prose nobody notices. In a
+     mermaid diagram the box is drawn to the measured width, so the last
+     letter of an italic node label is painted outside its own rectangle —
+     which is exactly the "text escaping the boxes" this site had, on
+     `async bsdiff dispatched` and every other <i> label. Real italic faces
+     have correct metrics and the clipping goes away.
+
+  2. Load enredando-skin.css last. Relearn emits its own theme.css and
+     format-html.css before calling this partial, so loading here is what
+     lets the skin override structural rules by order instead of by
+     !important.
+
+  The skin is fingerprinted so a deploy cannot serve a stale copy from a
+  reader's cache — the whole point of the file is that it changes the look.
+*/ -}}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link
+  href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,500;1,600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+  rel="stylesheet">
+
+{{- with resources.Get "css/enredando-skin.css" }}
+  {{- $css := . }}
+  {{- if not hugo.IsServer }}
+    {{- $css = $css | minify | fingerprint "sha512" }}
+  {{- end }}
+  <link rel="stylesheet" href="{{ $css.RelPermalink }}"
+    {{- with $css.Data.Integrity }} integrity="{{ . }}"{{ end }}>
+{{- end }}
+
+{{- /* Tints the browser UI on Android Chrome and iOS Safari to the page
+       ground, the way the blog's head.html does. One flat value is correct:
+       this site ships a single dark variant. */ -}}
+<meta name="theme-color" content="#04070c">

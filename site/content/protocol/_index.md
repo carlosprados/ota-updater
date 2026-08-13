@@ -104,9 +104,9 @@ flowchart TD
     ALLOW -->|yes| FULLM["<b>full mode</b><br/>binary_endpoint set<br/>signed"]
     ALLOW -->|no| STRAND["UpdateAvailable = false<br/><i>device stays stranded</i>"]
 
-    classDef ok fill:#34a8532e,stroke:#34a853
-    classDef warn fill:#f9ab002e,stroke:#f9ab00
-    classDef bad fill:#d930252e,stroke:#d93025
+    classDef ok fill:#4ade802e,stroke:#4ade80
+    classDef warn fill:#fbbf242e,stroke:#fbbf24
+    classDef bad fill:#f871712e,stroke:#f87171
     class DELTAM,FULLM ok
     class RETRY,NOUP warn
     class E404,STRAND bad
@@ -136,13 +136,13 @@ sequenceDiagram
     S->>S: resolve artifact → target T
     S->>S: delta V→T not cached
     S-->>A: UpdateAvailable, RetryAfter=30<br/>(no signature)
-    Note over S: async bsdiff runs,<br/>bounded by delta_concurrency
+    Note over S: async bsdiff runs,<br/>bounded by<br/>delta_concurrency
 
     A->>S: POST /heartbeat (next cycle)
     S-->>A: signed manifest<br/>{T, delta_hash, signature, delta_endpoint}
 
     rect rgba(66, 133, 244, 0.18)
-        Note over A: verify signature BEFORE downloading
+        Note over A: verify signature<br/>BEFORE downloading
         A->>A: Ed25519.Verify(pub, T ‖ delta_hash, sig)
     end
 
@@ -150,7 +150,7 @@ sequenceDiagram
     S-->>A: compressed patch bytes
 
     rect rgba(66, 133, 244, 0.18)
-        Note over A: verify transfer BEFORE patching
+        Note over A: verify transfer<br/>BEFORE patching
         A->>A: SHA256(bytes) == delta_hash?
     end
 
