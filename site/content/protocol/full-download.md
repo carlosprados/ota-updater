@@ -24,8 +24,8 @@ flowchart TD
     NO["<b>no</b>"] --> OLD["<i>before:</i><br/>update_available = false<br/>on every heartbeat, forever"]
     NO --> NEW["<i>now:</i><br/>whole compressed target<br/>via binary_endpoint"]
 
-    classDef bad fill:#d930252e,stroke:#d93025
-    classDef good fill:#34a8532e,stroke:#34a853
+    classDef bad fill:#f871712e,stroke:#f87171
+    classDef good fill:#4ade802e,stroke:#4ade80
     class OLD bad
     class NEW,YES good
 ```
@@ -56,7 +56,7 @@ flowchart TD
     U --> CHK
     CHK --> STAGE["stage inactive slot,<br/>swap, exec"]
 
-    classDef full fill:#34a8532e,stroke:#34a853
+    classDef full fill:#4ade802e,stroke:#4ade80
     class U full
 ```
 

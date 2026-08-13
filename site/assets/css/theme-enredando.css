@@ -1,0 +1,186 @@
+/* ==========================================================================
+   theme-enredando.css — Relearn colour variant matching carlos.enredando.me
+   "Editorial Terminal": near-black ground, 40px grid, cyan #38bdf8, mono keys.
+   --------------------------------------------------------------------------
+   Only custom properties belong in this file. Relearn inlines its contents
+   inside a `:root[data-r-theme-variant='enredando'] { … }` wrapper, so any
+   plain selector here would end up nested in that block. The structural half
+   of the skin lives in enredando-skin.css, loaded from custom-header.html.
+
+   Channel values mirror the blog's tokens 1:1 so the two sites stay in step:
+     bg     #04070c / #0a0f16 / #0f1520 / #151d2b
+     fg     #e6edf7 / #aab4c4 / #6b7687 / #4a5466
+     accent cyan #38bdf8 · green #4ade80 · amber #fbbf24 · violet #c084fc
+   ========================================================================== */
+:root {
+  /* enredando */
+
+  /* ── Brand ─────────────────────────────────────────────────────────────
+     The blog has exactly one accent. Primary and secondary both point at
+     cyan on purpose: Relearn uses primary for chrome and secondary for
+     links, and splitting them would invent a second brand colour the blog
+     does not have. ACCENT is search highlighting, where cyan-on-cyan would
+     be invisible against a cyan link — amber is the blog's warning tone. */
+  --PRIMARY-color: rgba(56, 189, 248, 1);
+  --PRIMARY-HOVER-color: rgba(124, 205, 255, 1);
+  --SECONDARY-color: rgba(56, 189, 248, 1);
+  --SECONDARY-HOVER-color: rgba(165, 229, 255, 1);
+  --ACCENT-color: rgba(251, 191, 36, 1);
+  --ACCENT-HOVER-color: rgba(253, 216, 122, 1);
+
+  /* ── Typography ────────────────────────────────────────────────────────
+     Relearn ships Roboto Flex and drives it through font-variation-settings
+     ("wdth" 118, "GRAD" -200, …). Those axes do not exist in Inter or Space
+     Grotesk, and a browser handed an unknown axis on a static font renders
+     the fallback weight — so every one is reset to `normal` here. Leaving
+     them in place is what makes a swapped font look subtly wrong rather
+     than obviously broken. */
+  --MAIN-font: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --MAIN-font-variation-settings: normal;
+  --MAIN-font-weight: 400;
+  --MAIN-letter-spacing: normal;
+  --MAIN-BOLD-font-weight: 600;
+
+  --MAIN-TITLES-font: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --MAIN-TITLES-font-variation-settings: normal;
+  --MAIN-TITLES-font-weight: 600;
+  --MAIN-TITLES-letter-spacing: -0.02em;
+
+  /* The blog's h1 is 500 at -0.035em — display weight, not the thin 200 the
+     theme defaults to, which reads as a different typeface at 72px. */
+  --MAIN-TITLES-H1-font-variation-settings: normal;
+  --MAIN-TITLES-H1-font-weight: 500;
+  --MAIN-TITLES-H1-letter-spacing: -0.035em;
+  --MAIN-TITLES-H2-font-variation-settings: normal;
+  --MAIN-TITLES-H2-font-weight: 500;
+  --MAIN-TITLES-H3-font-variation-settings: normal;
+  --MAIN-TITLES-H3-font-weight: 600;
+  --MAIN-TITLES-H4-font-variation-settings: normal;
+  --MAIN-TITLES-H4-font-weight: 600;
+  --MAIN-TITLES-H5-font-variation-settings: normal;
+  --MAIN-TITLES-H5-font-weight: 600;
+  --MAIN-TITLES-H6-font-variation-settings: normal;
+  --MAIN-TITLES-H6-font-weight: 600;
+
+  --CODE-font: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', menlo, monospace;
+  --CODE-font-variation-settings: normal;
+  --CODE-font-weight: 400;
+  --CODE-letter-spacing: normal;
+
+  --LOGO-font: 'JetBrains Mono', ui-monospace, monospace;
+  --LOGO-font-size: 0.95em;
+
+  /* ── Content ───────────────────────────────────────────────────────────
+     Body text is fg-1, not fg-0: on the blog the brightest tone is reserved
+     for headings and emphasis, and using it for running prose flattens the
+     hierarchy the whole design rests on. */
+  --MAIN-BG-color: rgba(4, 7, 12, 1);
+  --MAIN-TEXT-color: rgba(170, 180, 196, 1);
+  --MAIN-TITLES-TEXT-color: rgba(230, 237, 247, 1);
+  --MAIN-LINK-color: rgba(56, 189, 248, 1);
+  --MAIN-LINK-HOVER-color: rgba(165, 229, 255, 1);
+  --MAIN-TOPBAR-BORDER-color: rgba(56, 189, 248, 0.12);
+
+  /* ── Topbar ────────────────────────────────────────────────────────────
+     Matches .en-topbar: the same near-black at 82% that the blog blurs the
+     page behind, with a cyan hairline under it. */
+  --TOPBAR-BG-color: rgba(4, 7, 12, 0.82);
+  --TOPBAR-TEXT-color: rgba(170, 180, 196, 1);
+  --TOPBAR-SEPARATOR-color: rgba(148, 180, 220, 0.12);
+  --TOPBAR-OVERLAY-BG-color: rgba(10, 15, 22, 1);
+  --TOPBAR-LINK-color: rgba(170, 180, 196, 1);
+  --TOPBAR-LINK-HOVER-color: rgba(56, 189, 248, 1);
+  --TOPBAR-BUTTON-color: rgba(107, 118, 135, 1);
+  --TOPBAR-BUTTON-HOVER-color: rgba(56, 189, 248, 1);
+
+  /* ── Sidebar ───────────────────────────────────────────────────────────
+     Relearn paints the menu header with PRIMARY by default, which would put
+     a solid cyan slab where the blog has a quiet wordmark. Header is left
+     transparent so it reads as part of the same dark ground. */
+  --MENU-SECTIONS-BG-color: rgba(6, 10, 16, 1);
+  --MENU-SECTIONS-ACTIVE-BG-color: rgba(56, 189, 248, 0.06);
+  --MENU-SECTIONS-LINK-color: rgba(170, 180, 196, 1);
+  --MENU-SECTIONS-LINK-HOVER-color: rgba(230, 237, 247, 1);
+  --MENU-SECTION-ACTIVE-CATEGORY-color: rgba(56, 189, 248, 1);
+  --MENU-SECTION-ACTIVE-CATEGORY-BG-color: rgba(56, 189, 248, 0.08);
+  --MENU-SECTION-ACTIVE-CATEGORY-BORDER-color: rgba(56, 189, 248, 0.35);
+  --MENU-SECTION-SEPARATOR-color: rgba(148, 180, 220, 0.12);
+  --MENU-BORDER-color: rgba(148, 180, 220, 0.12);
+  --MENU-TOPBAR-BORDER-color: rgba(148, 180, 220, 0.12);
+  --MENU-TOPBAR-SEPARATOR-color: rgba(56, 189, 248, 0.12);
+
+  --MENU-HEADER-color: rgba(230, 237, 247, 1);
+  --MENU-HEADER-BG-color: rgba(0, 0, 0, 0);
+  --MENU-HEADER-BORDER-color: rgba(148, 180, 220, 0.12);
+
+  --MENU-SEARCH-color: rgba(107, 118, 135, 1);
+  --MENU-SEARCH-HOVER-color: rgba(56, 189, 248, 1);
+  --MENU-SEARCH-BG-color: rgba(10, 15, 22, 1);
+  --MENU-SEARCH-BORDER-color: rgba(148, 180, 220, 0.18);
+
+  --MENU-HOME-LINK-color: rgba(107, 118, 135, 1);
+  --MENU-HOME-LINK-HOVER-color: rgba(56, 189, 248, 1);
+  --MENU-HOME-TOP-SEPARATOR-color: rgba(148, 180, 220, 0.12);
+  --MENU-HOME-SEPARATOR-color: rgba(148, 180, 220, 0.12);
+  --MENU-HOME-BOTTOM-SEPARATOR-color: rgba(148, 180, 220, 0.12);
+
+  --MENU-VISITED-color: rgba(56, 189, 248, 1);
+  --LOGO-LINK-color: rgba(230, 237, 247, 1);
+  --LOGO-LINK-HOVER-color: rgba(56, 189, 248, 1);
+
+  /* ── Code ──────────────────────────────────────────────────────────────
+     github-dark is the chroma the blog actually serves in dark mode
+     (verified against its built bundle: #ff7b72 / #79c0ff / #a5d6ff all
+     present). Generated into assets/css/chroma-github-dark.css with
+     `hugo gen chromastyles --style=github-dark`, so token colours match
+     the blog exactly rather than approximately. The block background is
+     overridden to the blog's own #0a0f16 instead of github's #0d1117 —
+     the blog tints code with its card colour, not with github's. */
+  --CODE-theme: github-dark;
+  --CODE-BLOCK-color: rgba(230, 237, 243, 1);
+  --CODE-BLOCK-BG-color: rgba(10, 15, 22, 1);
+  --CODE-BLOCK-BORDER-color: rgba(148, 180, 220, 0.14);
+  --CODE-INLINE-color: rgba(56, 189, 248, 1);
+  --CODE-INLINE-BG-color: rgba(56, 189, 248, 0.07);
+  --CODE-INLINE-BORDER-color: rgba(56, 189, 248, 0.22);
+
+  /* ── Boxes / notices ───────────────────────────────────────────────────
+     bg-2, so a notice sits one step above the page and below a code block. */
+  --BOX-CAPTION-color: rgba(4, 7, 12, 1);
+  --BOX-BG-color: rgba(15, 21, 32, 1);
+  --BOX-TEXT-color: rgba(170, 180, 196, 1);
+
+  --TAG-BG-color: rgba(56, 189, 248, 1);
+
+  --BROWSER-theme: dark;
+  --MERMAID-theme: dark;
+  --OPENAPI-theme: dark;
+  --OPENAPI-CODE-theme: obsidian;
+
+  /* ── Measure ───────────────────────────────────────────────────────────
+     Careful: this is not the content width. Relearn derives the content
+     column from it as
+
+       MAIN-MAX-width − MENU-L-width − 2 × 3.25rem
+
+     so the theme's default 81.25rem leaves an article only ~920px wide. The
+     blog drops Blowfish's max-w-prose entirely (`.prose { max-width: none }`)
+     and runs its content at ~1176px, and matching that measure is what makes
+     the two sites read at the same rhythm — but it also matters for the
+     diagrams: anything wider than the column is scaled down by the browser,
+     and a flowchart at 0.5 scale has 7px labels. 95rem back-solves to about
+     1140px of column, which is the budget every diagram here is sized to.
+
+     The property is `--MAIN-WIDTH-MAX`, not `--MAIN-MAX-width`. variables.css
+     resolves it as `var(--MENU-MAX-width, var(--MAIN-WIDTH-MAX, 81.25rem))` —
+     the obvious-looking name is read by nothing and fails silently, which is
+     exactly how the first attempt at this left the column at 924px. */
+  --MAIN-WIDTH-MAX: 95rem;
+  --MENU-L-width: 17rem;
+
+  /* Print falls back to the light defaults, which is correct — a near-black
+     page costs a reader a toner cartridge. Only the fonts carry over. */
+  --PRINT-MAIN-font: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --PRINT-CODE-font: 'JetBrains Mono', ui-monospace, menlo, monospace;
+  --PRINT-TAG-BG-color: rgba(56, 189, 248, 1);
+}

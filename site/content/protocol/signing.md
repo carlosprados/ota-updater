@@ -51,8 +51,8 @@ flowchart LR
     DTH & DPH --> SIG["<b>same 64-byte payload</b><br/>Ed25519.Sign"]
     FTH & FPH --> SIG
 
-    classDef mode fill:#4285f42e,stroke:#4285f4
-    classDef sig fill:#34a8532e,stroke:#34a853
+    classDef mode fill:#38bdf82e,stroke:#38bdf8
+    classDef sig fill:#4ade802e,stroke:#4ade80
     class DT,DTH,DP,DPH,FT,FTH,FP,FPH mode
     class SIG sig
 ```

@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 /*
- * Parses every ```mermaid block under content/ against the SAME mermaid
- * version the theme actually ships.
+ * Two checks, both guarding failures that build green and break in the browser.
+ *
+ * 1. Parses every ```mermaid block under content/ against the SAME mermaid
+ *    version the theme actually ships.
+ * 2. Parses hugo.toml's `mermaidInitialize` as JSON, because that is what the
+ *    browser does with it.
  *
  * Why this exists: the diagrams were once validated with a newer mermaid than
  * Relearn bundles, which accepted syntax the shipped renderer rejected. The
@@ -24,6 +28,32 @@ const BUNDLE = path.join(
   SITE,
   '_vendor/github.com/McShelby/hugo-theme-relearn/assets/js/mermaid/mermaid.min.js',
 );
+
+/*
+ * `mermaidInitialize` reaches the page as a string and is handed to JSON.parse
+ * by the theme. If it is not valid JSON the parse throws, themeUseMermaid is
+ * never assigned, and initMermaid returns early — every diagram on the site
+ * disappears, with no Hugo warning and no console error a build would notice.
+ * It happened here: a comment value written across several lines, which TOML
+ * accepts inside its multi-line string and JSON does not.
+ */
+function checkMermaidInitialize() {
+  const toml = fs.readFileSync(path.join(SITE, 'hugo.toml'), 'utf8');
+  const m = toml.match(/^\s*mermaidInitialize\s*=\s*'''([\s\S]*?)'''/m);
+  if (!m) {
+    console.log('no mermaidInitialize in hugo.toml — nothing to validate');
+    return true;
+  }
+  try {
+    JSON.parse(m[1]);
+    console.log('mermaidInitialize parses as JSON');
+    return true;
+  } catch (err) {
+    console.error(`\nhugo.toml [mermaidInitialize] is not valid JSON: ${err.message}`);
+    console.error('the browser will fail the same way, and every diagram will vanish');
+    return false;
+  }
+}
 
 function themeMermaidVersion() {
   if (!fs.existsSync(BUNDLE)) {
@@ -54,6 +84,8 @@ function collect(dir) {
     )
     .filter((f) => f.endsWith('.md'));
 }
+
+const configOk = checkMermaidInitialize();
 
 const version = themeMermaidVersion();
 console.log(`validating against mermaid ${version} (from the theme bundle)`);
@@ -107,3 +139,7 @@ if (bad) {
   process.exit(1);
 }
 console.log(`${total}/${total} diagrams parse cleanly`);
+
+if (!configOk) {
+  process.exit(1);
+}

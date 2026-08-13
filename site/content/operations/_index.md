@@ -7,34 +7,31 @@ description: "Running it: deployment, observability, resource limits."
 ## Deployment shape
 
 ```mermaid
-flowchart TB
-    subgraph PUB["public"]
-        LB["reverse proxy / LB"]
-    end
+flowchart LR
+    DEV["NB-IoT devices<br/><i>public internet</i>"]
+    CI["CI / CD<br/><i>internal only</i>"]
+    PROM["Prometheus<br/><i>internal only</i>"]
+
+    LB["reverse proxy / LB"]
 
     subgraph HOST["update-server host"]
-        API[":8080 HTTP API<br/><i>heartbeat, delta, binary, report</i>"]
-        COAP[":5683 CoAP/UDP"]
-        ADMIN["/admin/* on the API listener<br/><i>bearer token</i>"]
-        OBS["127.0.0.1:9100<br/><i>/metrics, optional pprof</i>"]
-        FS[("binaries_dir<br/>deltas_dir<br/>state_file")]
-        KEY[("server.key<br/>0600")]
+        API[":8080 HTTP<br/><i>device API</i>"]
+        COAP[":5683 CoAP<br/><i>UDP</i>"]
+        ADMIN["/admin/*<br/><i>bearer token</i>"]
+        OBS[":9100<br/><i>loopback</i>"]
+        FS[("store dirs<br/>+ state")]
+        KEY[("server.key")]
     end
 
-    subgraph INT["internal only"]
-        CI["CI / CD"]
-        PROM["Prometheus"]
-    end
-
-    DEV["NB-IoT devices"] --> LB --> API
+    DEV --> LB --> API
     DEV -.->|"UDP"| COAP
     CI -->|"firewalled"| ADMIN
     PROM -->|"private net"| OBS
     API --- FS
     API --- KEY
 
-    classDef secret fill:#d930252e,stroke:#d93025
-    classDef pub fill:#4285f42e,stroke:#4285f4
+    classDef secret fill:#f871712e,stroke:#f87171
+    classDef pub fill:#38bdf82e,stroke:#38bdf8
     class KEY,ADMIN secret
     class LB,API,COAP pub
 ```
@@ -65,7 +62,7 @@ sequenceDiagram
     participant W as watchers + sweeper
 
     SIG->>HTTP: Shutdown / Stop
-    Note over HTTP: no new requests,<br/>no new bsdiff dispatched
+    Note over HTTP: no new requests,<br/>no new bsdiff<br/>dispatched
     HTTP->>STORE: Close(ctx)
     Note over STORE: wait for in-flight<br/>bsdiff goroutines
     STORE->>W: context cancelled
