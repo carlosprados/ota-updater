@@ -24,6 +24,16 @@ enableGitInfo = false
     path = 'github.com/McShelby/hugo-theme-relearn'
 
 [markup]
+  [markup.goldmark.parser.attribute]
+    # Relearn's `children` shortcode ends its output with a Goldmark block
+    # attribute line — `{class="children children-type-tree …"}`. With block
+    # attributes off, Goldmark has no idea what that is and renders it as
+    # prose: the home page's "Where to go next" list ended with a literal
+    # `{class="children children-type-tree children-sort-"}`, smart-quotes and
+    # all. Nothing else in this site's content uses the syntax; it is on
+    # because the theme's own markup requires it.
+    block = true
+
   [markup.goldmark.renderer]
     # Needed for the few inline <br> and <sup> tags used in wide tables.
     unsafe = true
@@ -38,14 +48,22 @@ enableGitInfo = false
 [params]
   # Light + dark, following the reader's OS preference. Relearn switches
   # mermaid's own palette along with the page.
+  #
+  # One variant, dark, matching carlos.enredando.me. The blog ships an
+  # appearance switcher but only ever styles its dark side, so offering a
+  # light option here would advertise a look the family does not have. A
+  # single entry also makes Relearn drop the switcher from the sidebar
+  # instead of leaving a control with nothing to choose between.
   themeVariant = [
-    { identifier = 'relearn-light', name = 'Light', auto = [] },
-    { identifier = 'relearn-dark', name = 'Dark' },
+    { identifier = 'enredando', name = 'Enredando' },
   ]
 
-  # Diagrams are the point of this site: make them zoomable, since the
-  # architecture and retention flowcharts do not fit a phone screen.
-  mermaidZoom = true
+  # Diagrams are fixed images: no wheel-zoom, no drag-to-pan, no reset
+  # button. Relearn implements all three by adding a `zoomable` class to the
+  # container, so switching this off removes the behaviour rather than
+  # merely hiding its affordances. Wide diagrams scroll inside their own box
+  # (see .mermaid-container in enredando-skin.css) instead of being panned.
+  mermaidZoom = false
 
   disableLandingPageButton = true
   disableBreadcrumb = false
@@ -59,9 +77,100 @@ enableGitInfo = false
   # build states which release it documents instead of silently drifting.
   release = 'dev'
 
+  # Passed verbatim to mermaid.initialize(). `theme` is deliberately absent:
+  # Relearn strips it and substitutes the variant's --MERMAID-theme, so
+  # setting it here would be silently ignored. themeVariables survive, which
+  # is what re-tints the diagrams to the blog's palette instead of mermaid's
+  # own dark defaults — the greys it picks for subgraphs are opaque and cut
+  # visible rectangles out of the page grid.
+  #
+  # `themeVariables.fontSize` has to be 16px, and that is not a style choice.
+  # This was the actual cause of the text escaping its boxes on this site — the
+  # diagram sources were fine. The sequence renderer sizes its note and message
+  # boxes from this value but writes `font-size: 16px` into the <text> it
+  # paints, so at 14px every box was measured 14% narrower than the glyphs
+  # drawn into it and the tail of each label landed outside. Verified by
+  # driving the per-diagram `sequence.*FontSize` keys to 12 and 16: the painted
+  # size never moved off 16px and the boxes never changed, which is what rules
+  # those keys out as the lever and points at this one.
+  #
+  # `sequence.width` is the participant box, which is a FIXED width rather than
+  # a measured one — mermaid will not grow it for a long participant name. 190
+  # fits the longest one here ("disk (A/B slots)") at 16px mono; a longer name
+  # than that needs this raised or the name shortened, because no amount of
+  # font configuration will make the box follow the text.
+  #
+  # Keep this a single-line-per-string JSON document. Relearn hands it to
+  # JSON.parse in the browser, and JSON forbids literal newlines inside a
+  # string: a multi-line comment value here throws, themeUseMermaid is never
+  # assigned, and every diagram on the site silently stops rendering. Comments
+  # belong out here in TOML, where they cost nothing.
+  mermaidInitialize = '''
+    {
+      "flowchart": { "useMaxWidth": true, "htmlLabels": true, "curve": "basis" },
+      "sequence": { "useMaxWidth": true, "width": 190 },
+      "themeVariables": {
+        "fontFamily": "JetBrains Mono, ui-monospace, SFMono-Regular, menlo, monospace",
+        "fontSize": "16px",
+        "background": "#04070c",
+        "mainBkg": "#0f1520",
+        "primaryColor": "#0f1520",
+        "primaryTextColor": "#e6edf7",
+        "primaryBorderColor": "#38bdf8",
+        "secondaryColor": "#151d2b",
+        "secondaryTextColor": "#e6edf7",
+        "secondaryBorderColor": "#6b7687",
+        "tertiaryColor": "#0a0f16",
+        "tertiaryTextColor": "#aab4c4",
+        "tertiaryBorderColor": "rgba(148,180,220,0.18)",
+        "lineColor": "#6b7687",
+        "textColor": "#aab4c4",
+        "titleColor": "#e6edf7",
+        "nodeBorder": "#38bdf8",
+        "nodeTextColor": "#e6edf7",
+        "clusterBkg": "rgba(148,180,220,0.04)",
+        "clusterBorder": "rgba(148,180,220,0.18)",
+        "edgeLabelBackground": "#0a0f16",
+        "labelBackground": "#0a0f16",
+        "labelBoxBkgColor": "#0f1520",
+        "labelBoxBorderColor": "#38bdf8",
+        "labelTextColor": "#e6edf7",
+        "noteBkgColor": "rgba(251,191,36,0.10)",
+        "noteBorderColor": "#fbbf24",
+        "noteTextColor": "#e6edf7",
+        "actorBkg": "#0f1520",
+        "actorBorder": "#38bdf8",
+        "actorTextColor": "#e6edf7",
+        "actorLineColor": "#4a5466",
+        "signalColor": "#aab4c4",
+        "signalTextColor": "#aab4c4",
+        "sequenceNumberColor": "#04070c",
+        "activationBkgColor": "#151d2b",
+        "activationBorderColor": "#38bdf8",
+        "classText": "#e6edf7",
+        "attributeBackgroundColorOdd": "#0a0f16",
+        "attributeBackgroundColorEven": "#0f1520",
+        "transitionColor": "#aab4c4",
+        "transitionLabelColor": "#aab4c4",
+        "stateBkg": "#0f1520",
+        "stateLabelColor": "#e6edf7",
+        "altBackground": "#0a0f16",
+        "compositeBackground": "rgba(148,180,220,0.04)",
+        "compositeBorder": "rgba(148,180,220,0.18)",
+        "compositeTitleBackground": "rgba(56,189,248,0.08)",
+        "innerEndBackground": "#151d2b",
+        "specialStateColor": "#38bdf8",
+        "errorBkgColor": "rgba(248,113,113,0.12)",
+        "errorTextColor": "#f87171"
+      }
+    }
+  '''
+
   [params.mermaid]
-    # Force the same look in both themes for line weights; colors still
-    # follow the active variant.
+    # Loads the mermaid bundle on every page rather than only where a diagram
+    # was detected. Kept on because the diagrams are the point of this site
+    # and the include shortcode can pull one into a page that has none of its
+    # own, which the detection misses.
     force = true
 
 # Relearn 7 builds its own search index; declaring a SEARCH output format

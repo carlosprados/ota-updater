@@ -1,0 +1,32 @@
+{{- /*
+  logo.html — replaces Relearn's auto-logo with the blog's wordmark.
+
+  The blog sets its brand as [mark] + a two-tone name + a dim suffix line:
+  `carlos` bright, `.enredando.me` dim, "CTO · Advisor · Builder" beneath.
+  Reproducing that needs the name split into elements, which no amount of CSS
+  on a single <span class="logo-title"> can do — hence the override rather
+  than a rule in enredando-skin.css.
+
+  The mark carries an arrow instead of an initial. The blog uses "C" because
+  its name starts with one; a boxed "O" next to the words "OTA Updater" would
+  just read as a stutter, and the arrow says what the project does.
+
+  Three class names here are a contract with the theme, not decoration:
+
+    id="R-logo"          its stylesheet keys every logo rule off this
+    class="R-default"    same
+    class="logo-title"   the variant machinery emits
+                         `#R-logo.R-default:not(:has(> .logo-title)):not(:has(> .logo-image…)) { display: none }`
+                         so a logo carrying neither is hidden outright — which
+                         is exactly what happened to the first draft of this
+                         file: correct markup in the DOM, invisible on screen.
+*/ -}}
+<a id="R-logo" class="R-default direction-row en-brand"
+   href="{{ partial "permalink.gotmpl" (dict "to" site.Home) }}"
+   title="{{ site.Title }}">
+  <span class="en-brand-mark" aria-hidden="true">&uarr;</span>
+  <span class="en-brand-text logo-title">
+    <span class="en-brand-name"><b>OTA</b><span>Updater</span></span>
+    <span class="en-brand-suffix">Go · NB-IoT · delta OTA</span>
+  </span>
+</a>

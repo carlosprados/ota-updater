@@ -11,33 +11,34 @@ directory: the server is a library that also ships a binary, not a binary with
 some code hidden inside it.
 
 ```mermaid
-flowchart TB
-    subgraph CMD["cmd/"]
-        EA["edge-agent<br/><i>~190 line wrapper</i>"]
-        US["update-server"]
-    end
+flowchart LR
+    ROOT["ota-updater/"] --> CMD["cmd/<br/><i>thin wrappers</i>"]
+    ROOT --> PKG["pkg/<br/><i>all exported</i>"]
 
-    subgraph PKG["pkg/ — exported"]
-        AGENT["agent<br/><i>Updater, SlotManager,<br/>Watchdog, Downloader</i>"]
-        SERVER["server<br/><i>Store, Registry, Manifester,<br/>handlers, Retention</i>"]
-        PROTO["protocol<br/><i>wire types, ArtifactKey</i>"]
-        CRYPTO["crypto<br/><i>Ed25519 + PEM</i>"]
-        DELTA["delta<br/><i>bsdiff + zstd</i>"]
-        COMP["compression<br/><i>zstd</i>"]
-        AIO["atomicio<br/><i>durable writes</i>"]
-    end
+    CMD --> EA["edge-agent<br/><i>~190 lines</i>"]
+    CMD --> US["update-server"]
 
-    EA --> AGENT
-    US --> SERVER
-    AGENT --> PROTO & CRYPTO & DELTA & COMP & AIO
-    SERVER --> PROTO & CRYPTO & DELTA & COMP & AIO
-    DELTA --> COMP
+    PKG --> AGENT["agent<br/><i>Updater, SlotManager,<br/>Watchdog, Downloader</i>"]
+    PKG --> SERVER["server<br/><i>Store, Registry, Manifester,<br/>handlers, Retention</i>"]
+    PKG --> PROTO["protocol<br/><i>wire types, ArtifactKey</i>"]
+    PKG --> CRYPTO["crypto<br/><i>Ed25519 + PEM</i>"]
+    PKG --> DELTA["delta<br/><i>bsdiff + zstd</i>"]
+    PKG --> COMP["compression<br/><i>zstd</i>"]
+    PKG --> AIO["atomicio<br/><i>durable writes</i>"]
 
-    classDef entry fill:#f9ab002e,stroke:#f9ab00
-    classDef lib fill:#4285f42e,stroke:#4285f4
+    classDef dir fill:#6b76872e,stroke:#6b7687
+    classDef entry fill:#fbbf242e,stroke:#fbbf24
+    classDef lib fill:#38bdf82e,stroke:#38bdf8
+    class ROOT,CMD,PKG dir
     class EA,US entry
     class AGENT,SERVER,PROTO,CRYPTO,DELTA,COMP,AIO lib
 ```
+
+The dependency direction is one-way and shallow: each `cmd/` binary imports
+its own package, `agent` and `server` both import all five of the remaining
+ones, and nothing in that shared set imports anything above it. `delta` is the
+only one with an internal dependency — it compresses its output through
+`compression`.
 
 `protocol` is the only package both sides depend on for wire compatibility.
 Its structs carry **dual JSON and CBOR tags**, so one type serializes over
@@ -71,9 +72,9 @@ flowchart LR
     D1 --> HC
     B1 -.-> SRC
 
-    classDef disk fill:#5f63682e,stroke:#5f6368
-    classDef ram fill:#34a8532e,stroke:#34a853
-    classDef never fill:#d930252e,stroke:#d93025
+    classDef disk fill:#6b76872e,stroke:#6b7687
+    classDef ram fill:#4ade802e,stroke:#4ade80
+    classDef never fill:#f871712e,stroke:#f87171
     class B1,D1 disk
     class TC,HC ram
     class SRC never
@@ -169,8 +170,8 @@ flowchart TD
     DISK -->|no| GEN["dispatch async bsdiff<br/><i>bounded by delta_concurrency</i>"]
     GEN --> R404["404 → agent retries<br/>after RetryAfter"]
 
-    classDef good fill:#34a8532e,stroke:#34a853
-    classDef bad fill:#d930252e,stroke:#d93025
+    classDef good fill:#4ade802e,stroke:#4ade80
+    classDef bad fill:#f871712e,stroke:#f87171
     class SERVE good
     class NF,R404 bad
 ```
@@ -192,7 +193,7 @@ flowchart LR
     S --> R["rename()<br/><i>atomic swap</i>"]
     R --> D["fsync(parent dir)<br/><i>dirent durable</i>"]
 
-    classDef step fill:#4285f42e,stroke:#4285f4
+    classDef step fill:#38bdf82e,stroke:#38bdf8
     class W,S,R,D step
 ```
 

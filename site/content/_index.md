@@ -28,7 +28,7 @@ Apache-2.0. Both halves are importable Go packages, not just binaries.
 ## The shape of the system
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph OPS["Operator / CI"]
         BUILD["build artifact"]
     end
@@ -45,21 +45,21 @@ flowchart LR
         SLOTS["A/B slots<br/>+ watchdog"]
     end
 
-    BUILD -->|"file drop or<br/>POST /admin/artifacts"| REG
+    BUILD -->|"publish"| REG
     REG -->|"target hash"| MAN
     STORE <-->|"bytes"| MAN
     REG -.->|"live set"| RET
     RET -.->|"deletes stale"| STORE
 
-    UPD -->|"1 . POST /heartbeat<br/><i>device_id, version_hash, artifact</i>"| MAN
-    MAN -->|"2 . signed manifest"| UPD
-    UPD -->|"3 . GET /delta/from/to<br/>or /binary/hash"| STORE
-    STORE -->|"4 . compressed bytes"| UPD
+    UPD -->|"1 · heartbeat"| MAN
+    MAN -->|"2 · signed manifest"| UPD
+    UPD -->|"3 · GET delta"| STORE
+    STORE -->|"4 · bytes"| UPD
     UPD --> SLOTS
-    SLOTS -->|"5 . POST /report"| SERVER
+    SLOTS -->|"5 · report"| SERVER
 
-    classDef srv fill:#4285f42e,stroke:#4285f4,stroke-width:1px
-    classDef dev fill:#34a8532e,stroke:#34a853,stroke-width:1px
+    classDef srv fill:#38bdf82e,stroke:#38bdf8,stroke-width:1px
+    classDef dev fill:#4ade802e,stroke:#4ade80,stroke-width:1px
     class REG,STORE,MAN,RET srv
     class UPD,SLOTS dev
 ```

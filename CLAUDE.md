@@ -235,8 +235,32 @@ Analizadas y conscientemente pospuestas tras PR-G (2026-04-19). Ninguna es bloqu
   semver y resuelve a pseudo-versión. Efecto práctico: build reproducible.
 - `site/` es un **módulo Go anidado**, por lo que queda fuera de `go build ./...`
   y `go test ./...` de la raíz. No interfiere.
-- Los diagramas son bloques ```` ```mermaid ````; Relearn los renderiza con
-  wrapper *zoomable* y paleta que sigue el tema claro/oscuro. Tipos usados:
+- **Look & feel: clon del blog** (decidido 2026-08-13, rama
+  `ota/docs-look-and-feel`). Fondo casi negro con rejilla de 40px, acento cian
+  `#38bdf8`, cero radios de borde, chrome en mono con tracking, y las tres
+  familias del blog (Space Grotesk / Inter / JetBrains Mono). Tres ficheros:
+  - `site/assets/css/theme-enredando.css` — variante de color de Relearn,
+    **sólo custom properties**. El reparto no es estético: Relearn incrusta el
+    fichero de variante dentro de un wrapper
+    `:root[data-r-theme-variant='enredando'] { … }`, así que cualquier selector
+    normal que se ponga ahí acaba anidado dentro de ese bloque.
+  - `site/assets/css/enredando-skin.css` — todo lo estructural.
+  - `site/layouts/partials/custom-header.html` — fuentes + `<link>` del skin.
+  - `site/layouts/partials/logo.html` — wordmark a dos tonos como el del blog.
+    **Debe conservar la clase `logo-title`** en un hijo directo: el tema emite
+    `#R-logo.R-default:not(:has(> .logo-title)):not(:has(> .logo-image…)) {
+    display:none }`, así que un logo sin ninguna de las dos se oculta entero
+    (markup correcto en el DOM, invisible en pantalla).
+  - **Una sola variante, oscura.** El blog sólo estiliza su lado oscuro. La
+    impresión sigue cayendo a los defaults claros del tema, que es lo correcto.
+  - **`--MAIN-WIDTH-MAX`, no `--MAIN-MAX-width`.** `variables.css` lo resuelve
+    como `var(--MENU-MAX-width, var(--MAIN-WIDTH-MAX, 81.25rem))`: el nombre
+    obvio no lo lee nadie y falla en silencio. La columna sale de
+    `MAIN-WIDTH-MAX − MENU-L-width − 2 × 3.25rem`, así que 95rem ⇒ ~1060px.
+- Los diagramas son bloques ```` ```mermaid ````. **Imágenes fijas**: `mermaidZoom
+  = false` (decidido 2026-08-13), sin zoom de rueda, sin arrastre y sin botón de
+  reset; lo ancho desplaza dentro de su propia caja. Paleta desde
+  `params.mermaidInitialize` y `classDef` con la del blog. Tipos usados:
   flowchart (arquitectura, retención, ciclo de update), sequenceDiagram (ciclo
   completo, fallback de transporte, workflow del operador), stateDiagram-v2
   (slots A/B, watchdog/boot, ciclo de vida del artefacto, orden de verificación)
@@ -257,9 +281,43 @@ Analizadas y conscientemente pospuestas tras PR-G (2026-04-19). Ninguna es bloqu
   y `rgba()` en los `rect` de secuencia. Un relleno claro opaco es ilegible en
   modo oscuro, porque el color del texto lo pone el tema y no se puede fijar por
   nodo. Un tinte compone sobre el fondo activo y conserva el contraste en ambos.
-- **Ancho**: los flowcharts con ramas paralelas y etiquetas en las aristas se
-  disparan a lo ancho; por encima de ~1500 px el navegador los encoge y el texto
-  se vuelve ilegible. Medir con `mmdc` + `viewBox` antes de dar uno por bueno.
+- **`mermaidInitialize` tiene que ser JSON válido** (mordió el 2026-08-13).
+  Relearn se lo pasa a `JSON.parse` en el navegador: si revienta,
+  `themeUseMermaid` no se asigna nunca, `initMermaid` sale temprano y
+  **desaparecen TODOS los diagramas del sitio** con build verde y sin un solo
+  warning. JSON no admite saltos de línea dentro de una cadena, así que basta un
+  comentario multilínea dentro del `'''…'''` de TOML. Los comentarios van fuera,
+  en TOML. `task docs-diagrams` ahora hace ese `JSON.parse` explícitamente.
+- **Ancho: presupuesto ~1050px** (la columna real, medida). Por encima el
+  navegador encoge el SVG entero y un flowchart a 0.5 tiene etiquetas de 7px. El
+  culpable habitual son las etiquetas de arista largas: en `TB` gastan alto, en
+  `LR` gastan ancho. Medir el `viewBox` renderizado **en el navegador**, no con
+  `mmdc` (versión distinta) ni a ojo.
+- **Texto fuera de las cajas: tres causas, todas de medida, ninguna del fuente**
+  (diagnosticadas el 2026-08-13).
+  1. **Cursivas sintéticas.** Sin el eje `ital` en la petición a Google Fonts el
+     navegador inclina la romana, y la tinta del oblicuo sintético se sale de la
+     caja que mermaid dibujó al ancho *medido*. Se comía la última letra de cada
+     etiqueta `<i>`.
+  2. **`themeVariables.fontSize` debe valer 16px**, que es lo que mermaid pinta.
+     El renderer de secuencia dimensiona notas y mensajes con ese valor pero
+     escribe `font-size: 16px` en el `<text>`: a 14px todas las cajas salían un
+     14% estrechas. Las claves `sequence.*FontSize` **no mueven ni una ni otra**
+     (verificado forzándolas a 12 y a 16).
+  3. **`sequence.width` es un ancho FIJO de participante.** Mermaid no lo crece
+     por un nombre largo: o se sube el knob o se acorta el nombre.
+  Y las **notas se dimensionan por la separación entre participantes, no por su
+  texto**: si no cabe, hace falta un `<br/>` explícito, no hay wrapping.
+- **Subgrafos**: uno que sea extremo de una arista **pierde su `direction`**, y
+  uno sin ninguna arista se coloca como componente desconectado. Los dos dan el
+  mismo resultado: columna vertical dentro de una caja altísima. Si una relación
+  no se puede dibujar sin espagueti — el caso real fue "dos nodos dependen de
+  los cinco" — se cuenta en prosa y el diagrama muestra sólo las capas.
+- **`markup.goldmark.parser.attribute.block = true` es obligatorio**: el
+  shortcode `children` de Relearn termina su salida con una línea de atributo de
+  bloque `{class="children children-type-tree …"}`. Sin esa opción, Goldmark la
+  renderiza como prosa y la portada acaba con ese literal (con comillas
+  tipográficas incluidas) debajo de "Where to go next".
 - **No poner `# H1` en el cuerpo**: Relearn ya emite el `<h1>` desde el `title`
   del frontmatter. Duplicarlo da dos `h1` por página (además de romper la
   semántica de accesibilidad). Para que el título de página y el del menú
@@ -303,7 +361,7 @@ task docs-check         # build + verifica que los mermaid llegaron al HTML
 - Paths de recurso (HTTP y CoAP) idénticos — definidos en `pkg/protocol/constants.go`. Handlers de transporte **mirror**.
 - Logging: `slog` con campos estructurados. Campos obligatorios en agente: `device_id`, `version_hash`, `operation`. En servidor: `device_id`, `op`.
 - Errores: siempre `fmt.Errorf("operación: %w", err)`. Sin `errors.New` en rutas de error con contexto útil.
-- Rama de trabajo actual: `ota/multi-artifact-server`. Seguir convención `ota/<feature>`.
+- Rama de trabajo actual: `ota/docs-look-and-feel`. Seguir convención `ota/<feature>`.
 - **`gofmt` limpio y verificado en CI** desde 2026-08-08. El drift previo (8
   ficheros) se saneó al introducir `.github/workflows/ci.yml`, porque un CI que
   arranca en rojo no lo mira nadie. El CI también exige `go mod tidy` limpio.
